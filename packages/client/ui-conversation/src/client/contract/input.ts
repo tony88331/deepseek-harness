@@ -268,6 +268,13 @@ export interface DraftInitializationOptions {
 /** An initialization request never waits for a React mount or a remote catalog. */
 export type DraftInitializationResult = 'applied' | 'preserved' | 'blocked'
 
+/** Half-open UTF-16 range inside inserted text, identified by its owner's opaque token. */
+export interface InsertionOrigin {
+  readonly token: object
+  readonly start: number
+  readonly end: number
+}
+
 /**
  * The public input action face provided to every session-scope slot
  * component: stable-identity callbacks, mirroring the
@@ -275,6 +282,8 @@ export type DraftInitializationResult = 'applied' | 'preserved' | 'blocked'
  * paste/…) stay InputBar-private and never ride this face.
  */
 export interface InputActions {
+  /** Opaque sources that still own text in the current editor document. */
+  getInsertionOrigins?(): readonly object[]
   /**
    * Insert one nonblank quote.
    * @param text - selected text; the sent message carries it as a Markdown blockquote.
@@ -290,7 +299,7 @@ export interface InputActions {
    * @param span - captured selection and draft revision.
    * @returns false when the draft changed or submission locked the editor.
    */
-  insertText(text: string, span: TokenSpan): boolean
+  insertText(text: string, span: TokenSpan, origin?: InsertionOrigin): boolean
   /** Replace the whole draft with plain text, removing inline reference chips. */
   setDraft(text: string): void
   /** Write the current semantic document through the mounted persistence callback. */
