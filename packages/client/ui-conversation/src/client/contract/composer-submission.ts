@@ -12,6 +12,26 @@ export type InputSubmitMode = BusyEnterBehavior
 /** Keyboard gesture whose delivery mode the submission policy resolves. */
 export type ComposerSubmitGesture = 'enter' | 'accelerated'
 
+/**
+ * Frozen wire intent stored with the ordinary Session draft until admission is known.
+ * Files use their original upload receipts, so a retry never re-uploads them.
+ */
+export interface PendingComposerSend {
+  readonly requestId: SessionRequestId
+  readonly afterSeq: number
+  readonly mode: InputSubmitMode
+  readonly content: import('@deepseek-ai/dsh-api-session-controller/types').PromptContentPart[]
+  readonly attachmentNames: readonly string[]
+  readonly ownsDraft: boolean
+}
+
+/** Draft owner's persistence and explicit-retry controls for one admission. */
+export interface ComposerSendRecovery {
+  readonly restored?: PendingComposerSend
+  save(record: PendingComposerSend): void
+  offerRetry(retry?: () => void): void
+}
+
 /** Host admission of one ordinary composer draft addressed by Session and request identity. */
 export interface InputSubmission {
   /** Owning Session. */

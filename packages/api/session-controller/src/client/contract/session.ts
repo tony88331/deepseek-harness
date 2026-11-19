@@ -30,6 +30,8 @@ export type PendingSubmissionRetirement =
 
 /** Input registering one local submission echo ahead of its prompt call. */
 export interface BeginSubmissionInput {
+  /** Reattach a saved composer admission without dispatching it. */
+  readonly restore?: { readonly requestId: SessionRequestId; readonly afterSeq: number }
   /** Delivery mode used with the upcoming prompt. */
   readonly mode: 'queue' | 'steer'
   /** Prompt text exactly as the upcoming prompt will send it. */
@@ -51,6 +53,8 @@ export interface BeginSubmissionInput {
 export interface SubmissionHandle {
   /** The prompt RPC identity; pass it to {@link ISession.prompt}. */
   readonly requestId: SessionRequestId
+  /** Journal cursor before registration, for a later restore. */
+  readonly afterSeq?: number
   /** Retire the echo as failed when the caller cannot reach prompt() (serialization failure); no-op after any other settlement. */
   abandon(): void
 }

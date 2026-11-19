@@ -22,7 +22,7 @@ import type {
 } from '../contract/input.ts'
 import type { ComposerKeyboard } from '../contract/draft-editor.ts'
 import type { ComposerBlocks } from '../contract/composer-blocks.ts'
-import type { InputSubmission, InputSubmitMode } from '../contract/composer-submission.ts'
+import type { ComposerSendRecovery, InputSubmission, InputSubmitMode } from '../contract/composer-submission.ts'
 import type { PopupDismissFace } from './facade.ts'
 import { SessionInputShell } from './facade.ts'
 import { reportMessageSubmission } from './submission-analytics.ts'
@@ -50,6 +50,7 @@ interface ConversationAttachmentFace {
     signal?: AbortSignal,
     accept?: () => void,
     observe?: (submission: Omit<InputSubmission, 'draftRevision'>) => void,
+    recovery?: ComposerSendRecovery,
   ): Promise<SubmitOutcome>
   serializeDraftAttachments(attachmentIds: readonly DraftAttachmentId[]): Promise<DraftAttachmentSerializationResult>
   releaseDraftAttachment(id: DraftAttachmentId): void
@@ -154,7 +155,7 @@ export class InputHub implements SessionInputResolver {
     const existing = this.shells.get(binding)
     if (existing !== undefined) return existing
     const { session, ctx: actx } = binding
-    const shell = new SessionInputShell({
+    const shell: SessionInputShell = new SessionInputShell({
       actx,
       submissionState: () => {
         const state = session.getSnapshot()
@@ -180,7 +181,7 @@ export class InputHub implements SessionInputResolver {
       popup: () => this.popup(actx),
       inbox: session.projections.faceOf('inbox') as ObservableSnapshot<InboxState | undefined>,
       defaultSink: (text, attachmentIds, mode, signal, accept, draftRevision) =>
-        this.sink(session, text, attachmentIds, mode, signal, accept, draftRevision),
+        this.sink(session, text, attachmentIds, mode, signal, accept, draftRevision, shell.recovery),
       quoteRemoveLabel: () => this.t('quote.remove'),
       session: () => session.getSnapshot(),
       composerBlock: () => this.conversation().blocks.storeFor(session.sessionId).getSnapshot(),
@@ -233,7 +234,9 @@ export class InputHub implements SessionInputResolver {
         return () => { shell.refreshLexiconSubscription() }
       }, 'conversation.input: reference catalogs')
     })
-    shell.setDraft(readConversationDraft(binding.sessionId))
+    const saved = readConversationDraft(binding.sessionId)
+    shell.setDraft(saved)
+    if (saved.pendingSend !== undefined) shell.restoreSend(saved.pendingSend)
     // A reload discarded the browser-owned attachments; say so instead of dropping them silently.
     if (takeUnloadMark(binding.sessionId)) shell.notify('error', this.t('attachments.unavailable'))
     return shell
@@ -368,8 +371,9 @@ export class InputHub implements SessionInputResolver {
     signal: AbortSignal,
     accept: () => void,
     draftRevision: number,
+    recovery?: ComposerSendRecovery,
   ): Promise<SubmitOutcome> {
-    if (text === '' && attachmentIds.length === 0) {
+    if (text === '' && attachmentIds.length === 0 && recovery?.restored === undefined) {
       return session.prompt([], mode, signal).then(result => result.ok ? { kind: 'success' } : { kind: 'error' })
     }
     return this.conversation().sendSession(session, text, attachmentIds, mode, signal, accept, submission => {
@@ -379,7 +383,7 @@ export class InputHub implements SessionInputResolver {
       } catch (error) {
         this.rootCtx.logger.warn('Conversation submission observer failed: %o', error)
       }
-    })
+    }, session.getSnapshot().subagent === null ? recovery : undefined)
   }
 
   /**

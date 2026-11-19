@@ -445,6 +445,13 @@ export const InputBar = memo(function InputBar({
           onDone={dismissToast}
         />
       )}
+      {input?.sendRecovery !== undefined && (
+        <div className={css.notice}>
+          <span role="status">{t('input.sendUnconfirmed')} {input.sendRecovery.attachmentNames.join(', ')}</span>
+          <button type="button" disabled={disabled || !input.sendRecovery.canRetry}
+            onClick={() => keyboard?.retrySend?.()}>{t('input.retrySend')}</button>
+        </div>
+      )}
       {notice?.level === 'info' && (
         <div className={css.notice} role="status">
           {notice.text}

@@ -30,7 +30,7 @@ import type { ComposerBlocks } from './contract/composer-blocks.ts'
 import type {
   DraftAttachmentId, DraftAttachmentSerializationResult, SessionInputResolver, SubmitAttachment, SubmitOutcome,
 } from './contract/input.ts'
-import type { InputSubmission, InputSubmitMode } from './contract/composer-submission.ts'
+import type { ComposerSendRecovery, InputSubmission, InputSubmitMode } from './contract/composer-submission.ts'
 
 /**
  * The outward conversation face (`ctx.conversation`): the scope-addressed
@@ -245,6 +245,7 @@ export class ConversationController extends Service implements IConversation {
     signal?: AbortSignal,
     accept?: () => void,
     observe?: (submission: Omit<InputSubmission, 'draftRevision'>) => void,
+    recovery?: ComposerSendRecovery,
   ): Promise<SubmitOutcome> {
     const attachments = this.resolveDraftAttachments(attachmentIds)
     if (attachments.length !== attachmentIds.length) {
@@ -288,11 +289,13 @@ export class ConversationController extends Service implements IConversation {
     const ownership = { accepted: false, retiredUnobserved: false }
     const acceptance = Promise.withResolvers<undefined>()
     const retiredWithoutAcceptance = Promise.withResolvers<false>()
-    let uncertain = false
+    const restored = recovery?.restored
+    let uncertain = restored !== undefined
     const submission = session.beginSubmission({
       mode,
       text,
       attachments: pendingAttachments,
+      ...restored === undefined ? {} : { restore: { requestId: restored.requestId, afterSeq: restored.afterSeq } },
       ...(observe === undefined ? {} : { onUncertain: () => {
         uncertain = true
         report('unresolved')
@@ -317,13 +320,23 @@ export class ConversationController extends Service implements IConversation {
       acceptance.resolve(undefined)
       report('accepted')
     }
-    report('pending')
+    if (!restored) report('pending')
     let content: Parameters<SessionFace['prompt']>[0]
     try {
-      await nextPaint()
-      const uploaded = await serializeAttachments()
-      signal?.throwIfAborted()
-      content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
+      if (restored !== undefined) {
+        content = restored.content
+        recovery?.save(restored)
+        report('unresolved')
+      } else {
+        await nextPaint()
+        const uploaded = await serializeAttachments()
+        signal?.throwIfAborted()
+        content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
+        recovery?.save({
+          requestId: submission.requestId, afterSeq: submission.afterSeq ?? -1, mode, content,
+          attachmentNames: attachments.map(attachment => attachment.file.name), ownsDraft: true,
+        })
+      }
     } catch (error) {
       submission.abandon()
       report(signal?.aborted === true ? 'canceled' : 'rejected')
@@ -331,19 +344,29 @@ export class ConversationController extends Service implements IConversation {
     }
     // An Inbox row can show the acceptance before the receipt; a receipt that fails afterwards changes
     // nothing here because the Host already holds the message.
-    const result = await Promise.race([session.prompt(content, mode, signal, submission.requestId), acceptance.promise])
-    if (result !== undefined && !result.ok) {
-      if (!uncertain) {
-        report('rejected')
-        return { kind: 'error' }
-      }
-      // Leave the draft frozen while the original request can still be accepted. A second native Send must not mint another id.
+    const dispatch = () => Promise.race([session.prompt(content, mode, signal, submission.requestId), acceptance.promise])
+    let result = restored === undefined ? await dispatch() : undefined
+    if (result !== undefined && !result.ok && !uncertain) {
+      report('rejected')
+      return { kind: 'error' }
+    }
+    if (uncertain && !ownership.accepted) {
       const abandon = (): void => { submission.abandon() }
       if (signal?.aborted === true) abandon()
       signal?.addEventListener('abort', abandon, { once: true })
-      const settled = await Promise.race([acceptance.promise, retiredWithoutAcceptance.promise])
-      signal?.removeEventListener('abort', abandon)
-      if (settled === false) return { kind: 'error' }
+      try {
+        while (!ownership.accepted) {
+          const retry = Promise.withResolvers<'retry'>()
+          recovery?.offerRetry(() => { recovery.offerRetry(); retry.resolve('retry') })
+          const action = await Promise.race([acceptance.promise, retiredWithoutAcceptance.promise, retry.promise])
+          if (action === false) return { kind: 'error' }
+          if (action !== 'retry' || ownership.accepted) break
+          result = await dispatch()
+          if (result === undefined || result.ok) break
+        }
+      } finally {
+        signal?.removeEventListener('abort', abandon)
+      }
     }
     accepted()
     // An accepted prompt whose echo already retired unobserved, as when its queue entry was removed.

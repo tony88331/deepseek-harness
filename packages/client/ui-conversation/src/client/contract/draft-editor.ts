@@ -49,6 +49,8 @@ export interface DraftCommand {
  * token; runtime node identities are excluded.
  */
 export interface DraftSnapshot {
+  /** Interrupted ordinary native admission belonging to this Session's persisted draft. */
+  readonly pendingSend?: import('./composer-submission.ts').PendingComposerSend
   readonly text: string
   readonly references: readonly DraftReference[]
   readonly command?: DraftCommand
@@ -74,6 +76,8 @@ export type ArbitrateOutcome = 'consumed' | 'pick-highlighted' | 'pass'
  * are the submit-plane and trigger-pipeline verbs the editor does not own.
  */
 export interface ComposerKeyboard {
+  /** Retry the frozen request after an uncertain receipt, when offered. */
+  retrySend?(): void
   /** Live machine state for event-handler reads (render reads go through useInput). */
   readonly snapshot: InputState
   /** The shell-owned Lexical editor the composer binds its contenteditable to. */

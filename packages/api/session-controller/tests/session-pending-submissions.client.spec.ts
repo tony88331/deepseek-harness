@@ -189,6 +189,20 @@ describe('beginSubmission', () => {
     expect(session.getSnapshot().pendingSubmissions).toEqual([])
   })
 
+  it('restores an interrupted request from an already open Session without submitting it again', async ({ mock, start }) => {
+    const session = await sessionBench(mock, start, SID)
+    const requestId = 'saved-send' as SessionRequestId
+    mock.stream(FOLLOW, followScript(history([promptEvent(SessionSeq(0), requestId)])))
+    await session.open()
+    const onAccept = vi.fn()
+    const handle = session.beginSubmission({
+      mode: 'queue', text: '发送', attachments: [], onAccept, restore: { requestId, afterSeq: -1 },
+    })
+    expect(handle.requestId).toBe(requestId)
+    await vi.waitFor(() => expect(onAccept).toHaveBeenCalledOnce())
+    expect(mock.remote.session.prompt).not.toHaveBeenCalled()
+  }, COLD_BOOT_TIMEOUT_MS)
+
   for (const evidence of ['user message', 'Inbox insertion', 'absent'] as const) {
     it(`reconciles a lost receipt against an older reconnect page (${evidence})`, async ({ mock, start }) => {
       const session = await sessionBench(mock, start, SID)
