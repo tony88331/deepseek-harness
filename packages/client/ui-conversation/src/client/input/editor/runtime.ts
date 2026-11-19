@@ -5,8 +5,8 @@ import type { QuoteSummary } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   $addUpdateTag, $createParagraphNode, $createTextNode, $getAdjacentNode, $isTextNode,
   $getRoot, $getSelection, $getNodeByKey, $isRangeSelection,
-  BLUR_COMMAND, CLEAR_HISTORY_COMMAND, COMMAND_PRIORITY_BEFORE_CRITICAL, COMMAND_PRIORITY_CRITICAL, createEditor,
-  HISTORY_MERGE_TAG, PASTE_TAG,
+  BLUR_COMMAND, CLEAR_HISTORY_COMMAND, CONTROLLED_TEXT_INSERTION_COMMAND, COMMAND_PRIORITY_BEFORE_CRITICAL, COMMAND_PRIORITY_CRITICAL, createEditor,
+  HISTORY_MERGE_TAG, INPUT_COMMAND, PASTE_TAG,
   RootNode, SELECTION_CHANGE_COMMAND, SKIP_DOM_SELECTION_TAG, KEY_BACKSPACE_COMMAND, KEY_DELETE_COMMAND, HISTORY_PUSH_TAG,
 } from 'lexical'
 import { registerPlainText } from '@lexical/plain-text'
@@ -27,11 +27,13 @@ import { $composerLayout, $projectComposer, detectOffsetOfClipboardOffset } from
 import { $replaceDetectSpanWithNodes, $replaceDetectSpanWithText } from './span-map.ts'
 import type { DetectSpan } from './span-map.ts'
 
+const DOCUMENT_EDIT_TAG = 'dsh-composer-document-edit'
+
 type Lexicon = ReadonlyMap<'/' | '@', readonly string[]>
 
 /** Model callbacks read at the same editor registration and update points. */
 interface DraftEditorRuntimeDeps {
-  readonly onUpdate: () => void
+  readonly onUpdate: (documentEdited: boolean) => void
   readonly quoteLabels: () => QuoteNodeLabels
   readonly openReference: (source: string | undefined, reference: Pick<ReferenceInsert, 'ref' | 'appearance'>) => boolean
   readonly lexicon: () => Lexicon
@@ -122,7 +124,20 @@ export class DraftEditorRuntime {
       registerReferenceActivation(this.editor, (source, reference) =>
         this.deps.openReference(source, reference)),
       registerHistory(this.editor, createEmptyHistoryState(), HISTORY_MERGE_DELAY_MS),
-      this.editor.registerUpdateListener(() => { this.deps.onUpdate() }),
+      // DOM input can commit a same-value replacement without changing the semantic projection.
+      this.editor.registerCommand(INPUT_COMMAND, () => {
+        $addUpdateTag(DOCUMENT_EDIT_TAG)
+        return false
+      }, COMMAND_PRIORITY_CRITICAL),
+      this.editor.registerCommand(CONTROLLED_TEXT_INSERTION_COMMAND, () => {
+        const selection = $getSelection()
+        if ($isRangeSelection(selection) && !selection.isCollapsed()) {
+          $addUpdateTag(DOCUMENT_EDIT_TAG)
+          $getRoot().markDirty()
+        }
+        return false
+      }, COMMAND_PRIORITY_CRITICAL),
+      this.editor.registerUpdateListener(({ tags }) => { this.deps.onUpdate(tags.has(DOCUMENT_EDIT_TAG)) }),
       registerCommandChipSeat(this.editor),
       registerCommandChipSelection(this.editor),
       registerTextRefDecoration(this.editor, () => this.deps.lexicon()),

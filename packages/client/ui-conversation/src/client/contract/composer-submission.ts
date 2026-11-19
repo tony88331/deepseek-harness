@@ -13,8 +13,8 @@ export type InputSubmitMode = BusyEnterBehavior
 export type ComposerSubmitGesture = 'enter' | 'accelerated'
 
 /**
- * Frozen wire intent stored with the ordinary Session draft until admission is known.
- * Files use their original upload receipts, so a retry never re-uploads them.
+ * Frozen wire intent retained for one native admission until the Host outcome is known.
+ * Ordinary Sessions can replay the original upload receipts. Continuations only reconcile evidence.
  */
 export interface PendingComposerSend {
   readonly requestId: SessionRequestId

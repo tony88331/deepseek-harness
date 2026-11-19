@@ -24,6 +24,7 @@ import type {
   ArbitrateKey, ArbitrateOutcome, ComposerKeyboard, DraftInput, DraftSnapshot, ReferenceInsert, TokenSpan,
 } from '../contract/draft-editor.ts'
 import type { ComposerSendRecovery, PendingComposerSend, InputSubmitMode, MessageSubmission, MessageSubmissionState } from '../contract/composer-submission.ts'
+import type { ComposerDraftStorage } from './draft-storage.ts'
 import { serializeDraftPrompt } from './prompt.ts'
 import { SubmitMachine } from './machine.ts'
 import { resolveDraftInput, snapshotDraft } from '../draft.ts'
@@ -176,6 +177,8 @@ export class SessionInputShell implements SessionInput {
   private attachmentIds: readonly DraftAttachmentId[] = []
   /** Recovery callbacks belonging to the current native sink invocation. */
   recovery: ComposerSendRecovery | undefined
+  private storage: ComposerDraftStorage | undefined
+  private retiringDraft = false
   private pendingSend: { record: PendingComposerSend; revision: number } | undefined
   private retryPendingSend: (() => void) | undefined
   private unresolved = false
@@ -192,7 +195,7 @@ export class SessionInputShell implements SessionInput {
 
   constructor(private readonly deps: SessionInputDeps) {
     this.draftEditor = new DraftEditorRuntime({
-      onUpdate: () => { this.onEditorUpdate() },
+      onUpdate: documentEdited => { this.onEditorUpdate(documentEdited) },
       quoteLabels: () => ({ remove: this.deps.quoteRemoveLabel?.() ?? '' }),
       openReference: (source, reference) =>
         this.deps.inputTriggers?.()?.openReference(source, reference) ?? false,
@@ -207,14 +210,20 @@ export class SessionInputShell implements SessionInput {
   // ---- editor plumbing ----
 
   /** Re-project, sync the claim with the leading command chip, publish, and feed trigger tracking after every editor commit. */
-  private onEditorUpdate(): void {
+  private onEditorUpdate(documentEdited: boolean): void {
     const prev = this.draftEditor.refreshProjection()
     // Selection-only commits advance neither the revision nor the published
     // state: menus still track the caret below, while draftRev moves only
     // with content so a snapshot-built span (apply.ts) stays CAS-valid across
     // caret motion and subscribers do not re-render per caret move.
-    if (projectionContentChanged(prev, this.projection)) {
+    if (documentEdited || projectionContentChanged(prev, this.projection)) {
       this.rev += 1
+      if (!this.retiringDraft) {
+        this.storage?.edit(this.draftSnapshot)
+        if (this.pendingSend !== undefined) {
+          this.storage?.save(this.draftSnapshot, { ...this.pendingSend.record, ownsDraft: false })
+        }
+      }
       this.dispatchRun(({ type: 'draft-changed', command: this.projection.command }))
     }
     const caret = this.projection.caret
@@ -302,12 +311,8 @@ export class SessionInputShell implements SessionInput {
     const value = snapshotDraft(
       this.projection.clipboardText, this.projection.occurrences, this.projection.command?.token, this.projection.quotes,
     )
-    const pending = this.pendingSend
-    const document = pending === undefined ? value : {
-      ...value, pendingSend: { ...pending.record, ownsDraft: pending.record.ownsDraft && pending.revision === this.rev },
-    }
-    this.draftSnapshotCache = { revision: this.rev, value: document }
-    return document
+    this.draftSnapshotCache = { revision: this.rev, value }
+    return value
   }
 
   /** Persist the latest document without changing the editor or binding a writer. */
@@ -759,6 +764,14 @@ export class SessionInputShell implements SessionInput {
     void prompt.then(send, (error: unknown) => { this.failSink(attempt, error) })
   }
 
+  /** Bind persistence to the retained Session shell, independently of mounted views. */
+  initializeStorage(storage: ComposerDraftStorage): void {
+    const saved = storage.read()
+    this.setDraft(saved)
+    this.storage = storage
+    if (saved.pendingSend !== undefined) this.restoreSend(saved.pendingSend)
+  }
+
   /** Reattach the saved wire intent before returning the restored editable surface to callers. */
   restoreSend(record: PendingComposerSend): void {
     const revision = record.ownsDraft ? this.rev : -1
@@ -774,8 +787,8 @@ export class SessionInputShell implements SessionInput {
       ...restored === undefined ? {} : { restored },
       save: record => {
         if (this.dead(attempt)) return
+        this.storage?.save(this.draftSnapshot, { ...record, ownsDraft: record.ownsDraft && draftRevision === this.rev })
         this.pendingSend = { record, revision: draftRevision }
-        this.draftSnapshotCache = undefined
         this.publish()
       },
       offerRetry: retry => {
@@ -790,7 +803,8 @@ export class SessionInputShell implements SessionInput {
     ))
   }
 
-  private clearSendRecovery(): void {
+  private clearSendRecovery(clear: boolean): void {
+    if (this.pendingSend) this.storage?.settle(this.pendingSend.record, clear)
     this.recovery = undefined
     this.pendingSend = undefined
     this.retryPendingSend = undefined
@@ -827,20 +841,23 @@ export class SessionInputShell implements SessionInput {
 
   private applySinkOutcome(attempt: SubmitAttempt, outcome: SubmitOutcome): void {
     if (this.core.sendingAttempt !== attempt) return
-    this.clearSendRecovery()
     const accepted = outcome.kind === 'success'
+    const keepDraft = attempt.submission !== undefined && attempt.submission.draftRevision !== this.rev
+    const retiring = this.pendingSend !== undefined && accepted && !keepDraft
+    this.clearSendRecovery(retiring)
     if (accepted && attempt.attachmentIds.length > 0) {
       const sent = new Set(attempt.attachmentIds)
       this.attachmentIds = this.attachmentIds.filter(id => !sent.has(id))
     }
-    const keepDraft = attempt.submission !== undefined && attempt.submission.draftRevision !== this.rev
-    this.dispatchRun(({ type: 'sink-settled', attempt, ok: accepted, keepDraft, outcome }))
+    this.retiringDraft = retiring
+    try { this.dispatchRun(({ type: 'sink-settled', attempt, ok: accepted, keepDraft, outcome })) }
+    finally { this.retiringDraft = false }
   }
 
   /** Settle a send that ended without a Host outcome; the draft stays for correction. */
   private failSink(attempt: SubmitAttempt, error: unknown): void {
     if (this.dead(attempt)) return
-    this.clearSendRecovery()
+    this.clearSendRecovery(false)
     this.dispatchRun(({ type: 'sink-settled', attempt, ok: false, message: errorText(error) }))
   }
 

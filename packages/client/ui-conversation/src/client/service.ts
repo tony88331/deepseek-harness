@@ -352,7 +352,12 @@ export class ConversationController extends Service implements IConversation {
       try {
         while (!ownership.accepted) {
           const retry = Promise.withResolvers<'retry'>()
-          recovery?.offerRetry(() => { recovery.offerRetry(); retry.resolve('retry') })
+          // Continuation admission carries an identity for evidence, but its Host route cannot deduplicate a replay.
+          if (session.getSnapshot().subagent === null) {
+            recovery?.offerRetry(() => { recovery.offerRetry(); retry.resolve('retry') })
+          } else {
+            recovery?.offerRetry()
+          }
           const action = await Promise.race([acceptance.promise, retiredWithoutAcceptance.promise, retry.promise])
           if (action === false) return { kind: 'error' }
           if (action !== 'retry' || ownership.accepted) break
