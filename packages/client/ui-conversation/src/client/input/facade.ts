@@ -70,6 +70,7 @@ export interface SessionInputDeps {
     mode: InputSubmitMode,
     signal: AbortSignal,
     accept: () => void,
+    draftRevision: number,
   ): Promise<SubmitOutcome>
   /** Live Session and composer-block policy for transcript insertion. */
   quoteInsertionAllowed?: () => boolean
@@ -407,7 +408,7 @@ export class SessionInputShell implements SessionInput {
       try { state = this.deps.submissionState?.() } catch (_error) { /* Optional Session observations cannot interrupt submission. */ }
     }
     const submission: MessageSubmission = Object.freeze({
-      timestamp, mode, ...source === undefined ? {} : { source }, ...state === undefined ? {} : { state },
+      timestamp, mode, draftRevision: this.rev, ...source === undefined ? {} : { source }, ...state === undefined ? {} : { state },
     })
     // Claimed pre-gate: a claim that does not declare attachment acceptance never
     // submits while attachments are present — one notice, everything retained.
@@ -742,7 +743,10 @@ export class SessionInputShell implements SessionInput {
         this.settleSink(attempt, Promise.resolve({ kind: 'success' }))
         return
       }
-      this.settleSink(attempt, this.deps.defaultSink(text, attachmentIds, mode, attempt.signal, () => { this.acceptSink(attempt) }))
+      const draftRevision = attempt.submission?.draftRevision ?? this.rev
+      this.settleSink(attempt, this.deps.defaultSink(
+        text, attachmentIds, mode, attempt.signal, () => { this.acceptSink(attempt) }, draftRevision,
+      ))
     }
     if (!(prompt instanceof Promise)) { send(prompt); return }
     void prompt.then(send, (error: unknown) => { this.failSink(attempt, error) })
@@ -776,12 +780,14 @@ export class SessionInputShell implements SessionInput {
   }
 
   private applySinkOutcome(attempt: SubmitAttempt, outcome: SubmitOutcome): void {
+    if (this.core.sendingAttempt !== attempt) return
     const accepted = outcome.kind === 'success'
     if (accepted && attempt.attachmentIds.length > 0) {
       const sent = new Set(attempt.attachmentIds)
       this.attachmentIds = this.attachmentIds.filter(id => !sent.has(id))
     }
-    this.dispatchRun(({ type: 'sink-settled', attempt, ok: accepted, outcome }))
+    const keepDraft = attempt.submission !== undefined && attempt.submission.draftRevision !== this.rev
+    this.dispatchRun(({ type: 'sink-settled', attempt, ok: accepted, keepDraft, outcome }))
   }
 
   /** Settle a send that ended without a Host outcome; the draft stays for correction. */

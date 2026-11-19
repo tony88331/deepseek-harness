@@ -30,7 +30,7 @@ import type { ComposerBlocks } from './contract/composer-blocks.ts'
 import type {
   DraftAttachmentId, DraftAttachmentSerializationResult, SessionInputResolver, SubmitAttachment, SubmitOutcome,
 } from './contract/input.ts'
-import type { InputSubmitMode } from './contract/composer-submission.ts'
+import type { InputSubmission, InputSubmitMode } from './contract/composer-submission.ts'
 
 /**
  * The outward conversation face (`ctx.conversation`): the scope-addressed
@@ -229,6 +229,7 @@ export class ConversationController extends Service implements IConversation {
    * @param mode - queue or steer delivery selected by composer policy.
    * @param signal - optional cancellation for the complete Host admission.
    * @param accept - called inside the Session's acceptance, before the echo renders, so the composer settles with it.
+   * @param observe - publish native composer admission changes and wait for evidence after uncertain receipts.
    * @returns the Host admission outcome; local attachment preparation failures reject.
    */
   async sendSession(
@@ -238,6 +239,7 @@ export class ConversationController extends Service implements IConversation {
     mode: InputSubmitMode,
     signal?: AbortSignal,
     accept?: () => void,
+    observe?: (submission: Omit<InputSubmission, 'draftRevision'>) => void,
   ): Promise<SubmitOutcome> {
     const attachments = this.resolveDraftAttachments(attachmentIds)
     if (attachments.length !== attachmentIds.length) {
@@ -280,35 +282,65 @@ export class ConversationController extends Service implements IConversation {
     // The composer owns the attachments until the Host accepts the prompt.
     const ownership = { accepted: false, retiredUnobserved: false }
     const acceptance = Promise.withResolvers<undefined>()
+    const retiredWithoutAcceptance = Promise.withResolvers<false>()
+    let uncertain = false
     const submission = session.beginSubmission({
       mode,
       text,
       attachments: pendingAttachments,
-      onAccept: () => {
-        ownership.accepted = true
-        accept?.()
-        acceptance.resolve(undefined)
-      },
+      ...(observe === undefined ? {} : { onUncertain: () => {
+        uncertain = true
+        report('unresolved')
+      } }),
+      onAccept: () => { accepted() },
       onRetire: (settlement) => {
         if (settlement.reason === 'observed') this.settleSubmittedAttachments(session.sessionId, attachments, settlement)
         else if (ownership.accepted) this.releaseDraftAttachments(attachments)
-        else ownership.retiredUnobserved = true
+        else {
+          ownership.retiredUnobserved = true
+          retiredWithoutAcceptance.resolve(false)
+        }
       },
     })
+    const report = (status: InputSubmission['status']): void => {
+      observe?.({ sessionId: session.sessionId, requestId: submission.requestId, status })
+    }
+    const accepted = (): void => {
+      if (ownership.accepted) return
+      ownership.accepted = true
+      accept?.()
+      acceptance.resolve(undefined)
+      report('accepted')
+    }
+    report('pending')
     let content: Parameters<SessionFace['prompt']>[0]
     try {
       await nextPaint()
       const uploaded = await serializeAttachments()
+      signal?.throwIfAborted()
       content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
     } catch (error) {
       submission.abandon()
+      report(signal?.aborted === true ? 'canceled' : 'rejected')
       throw error
     }
     // An Inbox row can show the acceptance before the receipt; a receipt that fails afterwards changes
     // nothing here because the Host already holds the message.
     const result = await Promise.race([session.prompt(content, mode, signal, submission.requestId), acceptance.promise])
-    if (result !== undefined && !result.ok) return { kind: 'error' }
-    ownership.accepted = true
+    if (result !== undefined && !result.ok) {
+      if (!uncertain) {
+        report('rejected')
+        return { kind: 'error' }
+      }
+      // Leave the draft frozen while the original request can still be accepted. A second native Send must not mint another id.
+      const abandon = (): void => { submission.abandon() }
+      if (signal?.aborted === true) abandon()
+      signal?.addEventListener('abort', abandon, { once: true })
+      const settled = await Promise.race([acceptance.promise, retiredWithoutAcceptance.promise])
+      signal?.removeEventListener('abort', abandon)
+      if (settled === false) return { kind: 'error' }
+    }
+    accepted()
     // An accepted prompt whose echo already retired unobserved, as when its queue entry was removed.
     if (ownership.retiredUnobserved) this.releaseDraftAttachments(attachments)
     return { kind: 'success' }

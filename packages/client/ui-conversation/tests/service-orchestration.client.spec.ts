@@ -75,6 +75,53 @@ async function bench(maxConcurrentFileUploads = 2) {
 }
 
 describe('ConversationController', () => {
+  it('publishes the exact frozen revision and request on native Enter and click', async () => {
+    const b = await bench()
+    const observe = vi.fn()
+    const off = b.runtime.ctx.on('conversation/input/submission', observe)
+    try {
+      for (const source of ['enter', 'click'] as const) {
+        observe.mockClear()
+        b.prompt.mockClear()
+        b.shell.setDraft('same text')
+        const draftRevision = b.shell.snapshot.draftRev
+        b.shell.submit('queue', source)
+        const pending = observe.mock.calls[0]?.[0]
+        expect(pending).toEqual({ sessionId: 's1', draftRevision, requestId: expect.any(String), status: 'pending' })
+        await vi.waitFor(() => expect(b.shell.snapshot.draft).toBe(''))
+        expect(b.prompt.mock.calls[0]?.[3]).toBe(pending.requestId)
+        expect(observe.mock.calls).toEqual([[pending], [{ ...pending, status: 'accepted' }]])
+      }
+    } finally {
+      off()
+      await b.runtime.dispose()
+    }
+  })
+
+  it('keeps a newer native draft when an older request is accepted', async () => {
+    const b = await bench()
+    const observe = vi.fn()
+    const off = b.runtime.ctx.on('conversation/input/submission', observe)
+    const receipt = Promise.withResolvers<{ ok: true; value: { accepted: true } }>()
+    b.prompt.mockReturnValueOnce(receipt.promise)
+    try {
+      b.shell.setDraft('submitted draft')
+      const draftRevision = b.shell.snapshot.draftRev
+      b.shell.submit('queue', 'enter')
+      await vi.waitFor(() => expect(b.prompt).toHaveBeenCalledOnce())
+      b.shell.setDraft('new draft')
+      receipt.resolve({ ok: true, value: { accepted: true } })
+      await vi.waitFor(() => expect(b.shell.snapshot.phase).toBe('plain'))
+      expect(b.shell.snapshot.draft).toBe('new draft')
+      expect(observe.mock.calls[1]?.[0]).toEqual({
+        sessionId: 's1', draftRevision, requestId: b.prompt.mock.calls[0]?.[3], status: 'accepted',
+      })
+    } finally {
+      off()
+      await b.runtime.dispose()
+    }
+  })
+
   it('does not revive a withdrawn generation when an old input submits before scoped cleanup', async () => {
     const b = await bench()
     try {
@@ -1192,6 +1239,6 @@ it('reports nothing for a submission whose Session facts were not captured', () 
   const ctx = new Context()
   const track = vi.fn()
   ctx.provide('productAnalytics', { enabled: true, track } as never)
-  reportMessageSubmission(ctx, { timestamp: 1, mode: 'queue', source: 'click' })
+  reportMessageSubmission(ctx, { timestamp: 1, draftRevision: 0, mode: 'queue', source: 'click' })
   expect(track).not.toHaveBeenCalled()
 })

@@ -208,7 +208,7 @@ export class SubmitMachine {
     if (this.phase !== 'sending' || flight === undefined || flight.attempt.seq !== ev.attempt.seq) return []
     this.inflight = undefined
     this.phase = 'plain'
-    const effects: InputEffect[] = ev.ok ? [{ type: 'commit-draft', retainSuffixOf: null }] : []
+    const effects: InputEffect[] = ev.ok && ev.keepDraft !== true ? [{ type: 'commit-draft', retainSuffixOf: null }] : []
     const text = ev.message ?? ev.outcome?.text
     if (text !== undefined) {
       effects.push({ type: 'notice', level: ev.ok && ev.outcome?.kind !== 'error' ? 'info' : 'error', text })

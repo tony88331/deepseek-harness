@@ -10,13 +10,14 @@ import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-att
 import { SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session/types'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
+import { RemoteStreamCarrierError } from '@deepseek-ai/dsh-api-gateway/client'
 import { createClientTest, webApp } from '@deepseek-ai/dsh-client-test-runtime/src/assembly/index.ts'
 import type { PendingSubmissionRetirement } from '../src/client/contract/session.ts'
 import type { SessionRequestId } from '../src/types.ts'
 import { ev, historyValue } from './event-script.client.ts'
 import { sessionBench } from './remote/bench.client.ts'
 import {
-  FOLLOW, err, fileRef, followScript, history, imageRef, pushEvent,
+  FOLLOW, err, fileRef, followScript, history, imageRef, pageRule, pushEvent,
 } from './remote/session.client.ts'
 
 /** A Session talks through the Gateway client; its dependency cone is the Typert registry and the Connection. */
@@ -164,6 +165,88 @@ describe('beginSubmission', () => {
         expect(onAccept).toHaveBeenCalledOnce()
       })
     }
+  }
+
+  it('keeps an uncertain native composer request eligible for exact journal acceptance', async ({ mock, start }) => {
+    const session = await sessionBench(mock, start, SID)
+    await session.open()
+    const onAccept = vi.fn()
+    const onUncertain = vi.fn()
+    const handle = session.beginSubmission({
+      mode: 'queue', text: '先到', attachments: [], onAccept, onUncertain,
+    })
+    mock.remote.session.prompt.mockResolvedValueOnce(err(new RemoteError('gateway/internal', 'lost receipt', {})))
+    const outcome = await session.prompt([{ type: 'text', text: '先到' }], 'queue', undefined, handle.requestId)
+    expect(outcome.ok).toBe(false)
+    expect(onUncertain).toHaveBeenCalledOnce()
+    expect(onAccept).not.toHaveBeenCalled()
+    await pushEvent(mock, promptEvent(SessionSeq(0), 'another-request' as SessionRequestId))
+    expect(onAccept).not.toHaveBeenCalled()
+    await pushEvent(mock, promptEvent(SessionSeq(1), handle.requestId))
+    expect(onAccept).toHaveBeenCalledOnce()
+    expect(session.getSnapshot().promptError).toBeNull()
+    await settleFrames()
+    expect(session.getSnapshot().pendingSubmissions).toEqual([])
+  })
+
+  for (const evidence of ['user message', 'Inbox insertion', 'absent'] as const) {
+    it(`reconciles a lost receipt against an older reconnect page (${evidence})`, async ({ mock, start }) => {
+      const session = await sessionBench(mock, start, SID)
+      const unrelated = 'another-request' as SessionRequestId
+      mock.stream(FOLLOW, followScript(history([promptEvent(SessionSeq(0), unrelated)])))
+      await session.open()
+      const onAccept = vi.fn()
+      const onUncertain = vi.fn()
+      const onRetire = vi.fn()
+      const handle = session.beginSubmission({ mode: 'queue', text: '发送', attachments: [], onAccept, onUncertain, onRetire })
+      const receipt = Promise.withResolvers<Awaited<ReturnType<typeof session.prompt>>>()
+      mock.remote.session.prompt.mockImplementationOnce(() => receipt.promise)
+      const sending = session.prompt([{ type: 'text', text: '发送' }], 'queue', undefined, handle.requestId)
+      if (evidence !== 'Inbox insertion') {
+        receipt.resolve(err(new RemoteError('gateway/internal', 'lost receipt', {})))
+        expect((await sending).ok).toBe(false)
+        expect(onUncertain).toHaveBeenCalledOnce()
+      }
+      const refs = [imageRef('old-image'), fileRef('old-file')]
+      const matching = evidence === 'Inbox insertion'
+        ? { type: 'agent/inbox/spliced', seq: SessionSeq(1), time: 1, data: {
+          target: 'next-turn', start: 0, inserted: [queuedItem(handle.requestId, refs)],
+        } } as const
+        : promptEvent(SessionSeq(1), evidence === 'absent' ? unrelated : handle.requestId, refs)
+      mock.remote.session.page.mockImplementation(pageRule(request => request.throughSeq === 2
+        ? history([promptEvent(SessionSeq(2), unrelated)], true)
+        : history([promptEvent(SessionSeq(0), unrelated), matching])))
+      const replacement = {
+        ...historyValue([promptEvent(SessionSeq(3), unrelated)], true),
+        projections: { asOfSeq: 3, values: { inbox: { 'next-turn': [], 'next-step': [] } } },
+      }
+      mock.stream(FOLLOW, followScript({ ok: true, value: replacement }))
+      mock.streams.fail(FOLLOW, new RemoteStreamCarrierError('lost follow'))
+      await vi.waitFor(() => {
+        expect(session.eventSource.getSnapshot().entries.map(entry => entry.event.seq)).toEqual([3])
+      })
+      if (evidence === 'Inbox insertion') {
+        receipt.resolve(err(new RemoteError('gateway/internal', 'lost receipt', {})))
+        await sending
+      }
+
+      if (evidence === 'absent') {
+        await vi.waitFor(() => { expect(mock.log.requests('session/page')).toHaveLength(2) })
+        await settleFrames()
+        expect(onAccept).not.toHaveBeenCalled()
+        expect(onRetire).not.toHaveBeenCalled()
+        expect(session.getSnapshot().promptError).not.toBeNull()
+      } else {
+        await vi.waitFor(() => {
+          expect(onAccept).toHaveBeenCalledOnce()
+          expect(onRetire).toHaveBeenCalledExactlyOnceWith({ reason: 'observed', attachments: refs })
+        })
+        expect(session.getSnapshot().promptError).toBeNull()
+      }
+      expect(session.getSnapshot().pendingSubmissions).toEqual([])
+      expect(session.eventSource.getSnapshot().entries.map(entry => entry.event.seq)).toEqual([3])
+      expect(mock.log.requests('session/prompt')).toHaveLength(1)
+    })
   }
 
   it('never publishes an echo whose message was observed before the Host receipt', async ({ mock, start }) => {

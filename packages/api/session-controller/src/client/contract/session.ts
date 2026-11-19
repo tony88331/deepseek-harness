@@ -41,6 +41,8 @@ export interface BeginSubmissionInput {
    * publishes the echo, whether the receipt or an Inbox row showed it first.
    */
   readonly onAccept?: () => void
+  /** Keep observing this identity after an uncertain prompt receipt and notify its owner. */
+  readonly onUncertain?: () => void
   /** Settlement callback fired exactly once when the echo retires. */
   readonly onRetire?: (retirement: PendingSubmissionRetirement) => void
 }

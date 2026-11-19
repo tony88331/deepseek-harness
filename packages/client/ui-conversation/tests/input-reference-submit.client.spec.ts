@@ -67,7 +67,7 @@ describe('reference submission', () => {
     restored.setDraft(mirror.mock.calls.at(-1)?.[0] as string)
     restored.submit()
     await vi.waitFor(() => {
-      expect(sink).toHaveBeenCalledWith(spacedMention, [], 'queue', expect.any(AbortSignal), expect.any(Function))
+      expect(sink).toHaveBeenCalledWith(spacedMention, [], 'queue', expect.any(AbortSignal), expect.any(Function), expect.any(Number))
     })
   })
 
@@ -104,7 +104,7 @@ describe('reference submission', () => {
     await vi.waitFor(() => {
       expect(shell.snapshot.phase).toBe('plain')
     })
-    expect(sink).toHaveBeenNthCalledWith(1, mention, [], 'queue', expect.any(AbortSignal), expect.any(Function))
+    expect(sink).toHaveBeenNthCalledWith(1, mention, [], 'queue', expect.any(AbortSignal), expect.any(Function), expect.any(Number))
     expect(shell.snapshot).toMatchObject({
       draft: `${mention} `,
       occurrences: [{ source: 'reference', ref: mention, label: 'Research', offset: 0, length: mention.length }],
@@ -119,7 +119,7 @@ describe('reference submission', () => {
     await vi.waitFor(() => {
       expect(shell.snapshot.draft).toBe('')
     })
-    expect(sink).toHaveBeenNthCalledWith(2, mention, [], 'queue', expect.any(AbortSignal), expect.any(Function))
+    expect(sink).toHaveBeenNthCalledWith(2, mention, [], 'queue', expect.any(AbortSignal), expect.any(Function), expect.any(Number))
     expect(shell.snapshot.occurrences).toEqual([])
     expect(serializeReference).toHaveBeenCalledTimes(2)
   })
@@ -386,12 +386,12 @@ it('retains occurrence time and Session facts across arbitration and failed send
     expect(submitted).not.toHaveBeenCalled()
     pending.resolve(undefined)
     await vi.waitFor(() => { expect(submitted).toHaveBeenCalledOnce() })
-    expect(submitted).toHaveBeenLastCalledWith({ timestamp: 100, source: 'click', mode: 'steer', state: { running: true, runMode: 'plan', newSession: false } })
+    expect(submitted).toHaveBeenLastCalledWith({ timestamp: 100, draftRevision: 1, source: 'click', mode: 'steer', state: { running: true, runMode: 'plan', newSession: false } })
     firstSend.resolve({ kind: 'error', text: 'first rejected' })
     await vi.waitFor(() => { expect(shell.snapshot.phase).toBe('plain') })
     shell.setDraft('second')
     shell.actions.submit()
-    expect(submitted).toHaveBeenLastCalledWith({ timestamp: 200, mode: 'queue', state: { running: false, runMode: 'default', newSession: false } })
+    expect(submitted).toHaveBeenLastCalledWith({ timestamp: 200, draftRevision: 2, mode: 'queue', state: { running: false, runMode: 'default', newSession: false } })
     await vi.waitFor(() => { expect(sink).toHaveBeenCalledTimes(2) })
     secondSend.resolve({ kind: 'error', text: 'second rejected' })
     await vi.waitFor(() => { expect(shell.snapshot.phase).toBe('plain') })

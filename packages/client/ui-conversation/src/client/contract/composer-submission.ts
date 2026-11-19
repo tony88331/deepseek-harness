@@ -1,5 +1,7 @@
 /** Composer submission vocabulary shared by the input and settings domains. */
 
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { BusyEnterBehavior } from '../../submission-settings.ts'
 
 export type { BusyEnterBehavior } from '../../submission-settings.ts'
@@ -9,6 +11,29 @@ export type InputSubmitMode = BusyEnterBehavior
 
 /** Keyboard gesture whose delivery mode the submission policy resolves. */
 export type ComposerSubmitGesture = 'enter' | 'accelerated'
+
+/** Host admission of one ordinary composer draft addressed by Session and request identity. */
+export interface InputSubmission {
+  /** Owning Session. */
+  readonly sessionId: SessionId
+  /** The prompt request id echoed by native Inbox and user message events. */
+  readonly requestId: SessionRequestId
+  /** InputState.draftRev captured when the composer froze this draft. */
+  readonly draftRevision: number
+  /** Pending precedes the call. Unresolved may later settle as accepted from native evidence. */
+  readonly status: 'pending' | 'accepted' | 'rejected' | 'canceled' | 'unresolved'
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Notify a live ordinary prompt admission. Claimed slash commands and empty continuation retries are excluded.
+     * @param submission - native request identity, frozen revision, and current admission status.
+     * @mode emit
+     */
+    'conversation/input/submission'(submission: InputSubmission): void
+  }
+}
 
 /** Session facts captured when a message submission starts, before asynchronous command arbitration. */
 export interface MessageSubmissionState {
@@ -25,6 +50,7 @@ export interface MessageSubmissionState {
 /** Immutable occurrence and delivery intent carried by one composer attempt. */
 export interface MessageSubmission {
   readonly timestamp: number
+  readonly draftRevision: number
   readonly source?: 'click' | 'enter'
   readonly mode: InputSubmitMode
   readonly state?: MessageSubmissionState

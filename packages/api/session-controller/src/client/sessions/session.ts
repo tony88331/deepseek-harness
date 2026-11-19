@@ -36,6 +36,8 @@ import type { SessionRemotes } from './remotes.ts'
 import { ProjectionValueStore } from './projection-store.ts'
 import type { ProjectionsBaseline } from './projection-store.ts'
 import { resolvedClientTimeZone } from '../time-zone.ts'
+import { assertSessionWireEvent } from '../session-wire-event.ts'
+import { historyEntries } from './history-records.ts'
 import {
   ClientAssistantStream,
   type ClientAssistantStreamResult,
@@ -104,6 +106,8 @@ export interface SessionOptions {
 export class Session implements SessionFace {
   // ---- Window and derived state (all private; the snapshot is the only read API) ----
   private baseSeq = SessionLogOffset(0)
+  /** The installed tail cut, independent of older pages loaded by the UI. */
+  private submissionHistory = { beforeSeq: 0, lastSeq: -1 }
   private hasMore = false
   private historyWasPartial = false
   private openState: OpenState = 'cold'
@@ -136,6 +140,7 @@ export class Session implements SessionFace {
   private blankBit = true
   private removed = false
   private promptError: PromptError | null = null
+  private promptErrorRequestId: SessionRequestId | undefined
   private lastAgentError: string | null = null
   /** Local submission echoes, insertion-ordered, including those the Host has not accepted yet. */
   private pendingSubmissions: readonly PendingSubmission[] = []
@@ -157,6 +162,9 @@ export class Session implements SessionFace {
     /** Whether the Host accepted the prompt; the echo is published only from then on. */
     accepted: boolean
     readonly onAccept?: (() => void) | undefined
+    readonly onUncertain?: (() => void) | undefined
+    /** Sequences through this point predate dispatch or have already been checked. */
+    searchAfterSeq?: number
     readonly onRetire?: ((retirement: PendingSubmissionRetirement) => void) | undefined
     retiring: boolean
   }>()
@@ -251,7 +259,7 @@ export class Session implements SessionFace {
       attachments: input.attachments,
     }]
     this.submissionSettlements.set(requestId, {
-      placement, accepted: false, onAccept: input.onAccept, onRetire: input.onRetire, retiring: false,
+      placement, accepted: false, onAccept: input.onAccept, onUncertain: input.onUncertain, onRetire: input.onRetire, retiring: false,
     })
     return { requestId, abandon: () => { this.retireFailedSubmission(requestId) } }
   }
@@ -274,7 +282,10 @@ export class Session implements SessionFace {
     requestId?: SessionRequestId,
   ): Promise<RemoteResult<{ accepted: true }>> {
     this.promptError = null
+    this.promptErrorRequestId = undefined
     this.lastAgentError = null
+    const settlement = requestId === undefined ? undefined : this.submissionSettlements.get(requestId)
+    const dispatchedAfterSeq = this.submissionHistory.lastSeq
     // Before the first await, so a turn observed ahead of the receipt clears it.
     const firstPrompt = this.blankBit && !this.firstPromptPendingTurn
     if (firstPrompt) this.firstPromptPendingTurn = true
@@ -311,14 +322,25 @@ export class Session implements SessionFace {
       result = routed.ok ? { ok: true, value: { accepted: true } } : routed
     }
     if (!result.ok) {
-      // Rejection must leave a first prompt blank and eligible for workspace reuse.
-      if (firstPrompt) this.firstPromptPendingTurn = false
-      if (requestId !== undefined) this.retireFailedSubmission(requestId)
+      if (settlement?.accepted === true) return { ok: true, value: { accepted: true } }
+      // Both codes can originate in the carrier after the Host already received the prompt.
+      const onUncertain = result.error.code === 'gateway/internal' || result.error.code === 'gateway/cancelled'
+        ? settlement?.onUncertain
+        : undefined
       this.promptError = { op: 'send', error: result.error }
+      this.promptErrorRequestId = requestId
       this.notifier.markDirty()
+      if (onUncertain !== undefined && settlement !== undefined && requestId !== undefined) {
+        settlement.searchAfterSeq = dispatchedAfterSeq
+        onUncertain()
+        void this.reconcileUncertainSubmission(requestId)
+      } else {
+        if (firstPrompt) this.firstPromptPendingTurn = false
+        if (requestId !== undefined) this.retireFailedSubmission(requestId)
+      }
       return result
     }
-    this.acceptPrompt(requestId)
+    if (settlement?.accepted !== true) this.acceptPrompt(requestId)
     return result
   }
 
@@ -329,13 +351,18 @@ export class Session implements SessionFace {
    * Whichever arrives first publishes the echo; a later proof for an echo
    * still pending changes nothing.
    * @param requestId - identity from {@link beginSubmission}; absent for a prompt sent without an echo.
+   * @param publishEcho - false when historical evidence already settles the echo.
    */
-  private acceptPrompt(requestId: SessionRequestId | undefined): void {
+  private acceptPrompt(requestId: SessionRequestId | undefined, publishEcho = true): void {
     const settlement = requestId === undefined ? undefined : this.submissionSettlements.get(requestId)
     if (settlement?.accepted === true) return
     if (settlement !== undefined) {
       settlement.accepted = true
-      this.refreshAcceptedSubmissions()
+      if (publishEcho && settlement.admitted === undefined) this.refreshAcceptedSubmissions()
+    }
+    if (requestId !== undefined && this.promptErrorRequestId === requestId) {
+      this.promptError = null
+      this.promptErrorRequestId = undefined
     }
     this.promptAttempted = true
     this.blankBit = false
@@ -381,6 +408,7 @@ export class Session implements SessionFace {
       : await this.remote.session.cancel({ sessionId: this.sessionId })
     if (!result.ok) {
       this.promptError = { op: 'stop', error: result.error }
+      this.promptErrorRequestId = undefined
       this.notifier.markDirty()
     }
     return result
@@ -735,6 +763,10 @@ export class Session implements SessionFace {
   private acceptEventChange(change: SessionJournalChange): void {
     switch (change.type) {
       case 'replace':
+        this.submissionHistory = {
+          beforeSeq: change.entries[0]?.event.seq ?? 0,
+          lastSeq: change.entries.at(-1)?.event.seq ?? -1,
+        }
         this.installWindow(
           change.entries,
           change.hasMore,
@@ -748,6 +780,7 @@ export class Session implements SessionFace {
         } else this.prependWindow(change.entries, change.hasMore)
         return
       case 'append':
+        this.submissionHistory.lastSeq = change.entry.event.seq
         this.publishAssistantEntry(this.assistantStream.acceptDurable(change.entry))
         return
       case 'assistant-stream':
@@ -797,7 +830,61 @@ export class Session implements SessionFace {
         this.observeSubmissionInsertions(target, inbox?.[target] ?? [], 0, projections.asOfSeq)
       }
     }
+    for (const requestId of this.submissionSettlements.keys()) {
+      void this.reconcileUncertainSubmission(requestId)
+    }
     this.notifier.markDirty()
+  }
+
+  /** Look behind a restored tail for exact acceptance missed while follow was unavailable. */
+  private async reconcileUncertainSubmission(requestId: SessionRequestId): Promise<void> {
+    const events = this.events
+    const settlement = this.submissionSettlements.get(requestId)
+    const afterSeq = settlement?.searchAfterSeq
+    const cut = this.submissionHistory
+    if (events === undefined || settlement === undefined || afterSeq === undefined
+      || settlement.accepted || settlement.retiring || cut.beforeSeq <= afterSeq + 1) return
+
+    const address = this.sessionAddress()
+    let beforeSeq = cut.beforeSeq
+    try {
+      while (beforeSeq > afterSeq + 1) {
+        const throughSeq = beforeSeq - 1
+        const result = await this.remote.session.page(
+          { address, throughSeq, ...HISTORY_PAGE_OPTIONS }, events.signal,
+        )
+        if (events.signal.aborted || this.submissionHistory !== cut || settlement.accepted || settlement.retiring
+          || !result.ok) return
+        const page = result.value
+        const first = page.records[0]?.event.seq
+        if (first === undefined || page.cursor !== throughSeq || first + page.records.length - 1 !== throughSeq) return
+        for (const [index, { event }] of page.records.entries()) {
+          assertSessionWireEvent(event)
+          if (event.seq !== first + index) return
+        }
+
+        for (const { event } of historyEntries(page.records)) {
+          if (event.seq <= afterSeq) continue
+          const messages = event.type === 'user/message' ? [event.data]
+            : event.type === 'agent/inbox/spliced' ? event.data.inserted : []
+          const match = messages.find(({ source }) => source.kind === 'user' && 'rpcId' in source
+            && source.rpcId === requestId)
+          if (match === undefined) continue
+          const attachments = attachmentRefsIn(match.content)
+          settlement.retiring = true
+          this.acceptPrompt(requestId, false)
+          this.finishSubmission(requestId, { reason: 'observed', attachments })
+          return
+        }
+        if (!page.hasMore) break
+        beforeSeq = first
+      }
+      settlement.searchAfterSeq = cut.beforeSeq - 1
+    } catch (error) {
+      if (!events.signal.aborted && !isRemoteFailure(error)) {
+        console.error('[session-controller] submission history lookup failed:', error)
+      }
+    }
   }
 
   private publishAssistantEntry(result: ClientAssistantStreamResult): void {
@@ -916,6 +1003,7 @@ export class Session implements SessionFace {
       return
     }
     settlement.admitted = attachmentRefsIn(message.content)
+    this.acceptPrompt(source.rpcId)
     this.retireAdmittedSubmission(source.rpcId)
   }
 
@@ -968,7 +1056,10 @@ export class Session implements SessionFace {
 
   private refreshAcceptedSubmissions(): void {
     this.acceptedSubmissions = this.pendingSubmissions
-      .filter(echo => this.submissionSettlements.get(echo.requestId)?.accepted === true)
+      .filter(echo => {
+        const settlement = this.submissionSettlements.get(echo.requestId)
+        return settlement?.accepted === true && settlement.admitted === undefined
+      })
   }
 
   /** Single removal point: drop the echo, publish, then notify the owner. */

@@ -22,7 +22,7 @@ import type {
 } from '../contract/input.ts'
 import type { ComposerKeyboard } from '../contract/draft-editor.ts'
 import type { ComposerBlocks } from '../contract/composer-blocks.ts'
-import type { InputSubmitMode } from '../contract/composer-submission.ts'
+import type { InputSubmission, InputSubmitMode } from '../contract/composer-submission.ts'
 import type { PopupDismissFace } from './facade.ts'
 import { SessionInputShell } from './facade.ts'
 import { reportMessageSubmission } from './submission-analytics.ts'
@@ -49,6 +49,7 @@ interface ConversationAttachmentFace {
     mode: InputSubmitMode,
     signal?: AbortSignal,
     accept?: () => void,
+    observe?: (submission: Omit<InputSubmission, 'draftRevision'>) => void,
   ): Promise<SubmitOutcome>
   serializeDraftAttachments(attachmentIds: readonly DraftAttachmentId[]): Promise<DraftAttachmentSerializationResult>
   releaseDraftAttachment(id: DraftAttachmentId): void
@@ -125,7 +126,8 @@ export class InputHub implements SessionInputResolver {
       inputTriggers: () => this.controller(actx),
       popup: () => this.popup(actx),
       inbox: session.projections.faceOf('inbox') as ObservableSnapshot<InboxState | undefined>,
-      defaultSink: (text, attachmentIds, mode, signal, accept) => this.sink(session, text, attachmentIds, mode, signal, accept),
+      defaultSink: (text, attachmentIds, mode, signal, accept, draftRevision) =>
+        this.sink(session, text, attachmentIds, mode, signal, accept, draftRevision),
       quoteRemoveLabel: () => this.t('quote.remove'),
       quoteInsertionAllowed: () => {
         const state = session.getSnapshot()
@@ -273,11 +275,19 @@ export class InputHub implements SessionInputResolver {
     mode: InputSubmitMode,
     signal: AbortSignal,
     accept: () => void,
+    draftRevision: number,
   ): Promise<SubmitOutcome> {
     if (text === '' && attachmentIds.length === 0) {
       return session.prompt([], mode, signal).then(result => result.ok ? { kind: 'success' } : { kind: 'error' })
     }
-    return this.conversation().sendSession(session, text, attachmentIds, mode, signal, accept)
+    return this.conversation().sendSession(session, text, attachmentIds, mode, signal, accept, submission => {
+      const event: InputSubmission = Object.freeze({ ...submission, draftRevision })
+      try {
+        this.rootCtx.emit('conversation/input/submission', event)
+      } catch (error) {
+        this.rootCtx.logger.warn('Conversation submission observer failed: %o', error)
+      }
+    })
   }
 
   /**
