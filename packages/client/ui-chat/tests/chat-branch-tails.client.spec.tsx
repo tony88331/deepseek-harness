@@ -34,7 +34,7 @@ afterEach(() => {
 
 const t: ChatNodeViewProps['t'] = makeTranslate(zh, commonZh)
 const renderUserImages: Parameters<ReturnType<typeof createUserContentFixture>>[1] = () => null
-const userSlots: PropsRenderSlots<'conversation.chat.user.before'> = {
+const userSlots: PropsRenderSlots<'conversation.chat.user.before' | 'conversation.chat.user-actions' | 'conversation.chat.steering-actions'> = {
   renderSlot: () => null,
   renderSlotChain: (_key, _owner, opts) => opts?.fallback ?? null,
   SessionProvider: ({ children }) => <>{children}</>,

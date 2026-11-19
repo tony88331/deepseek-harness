@@ -22,7 +22,7 @@ import { unusedImageLoader } from './reasoning-component-fixture.tsx'
 afterEach(cleanup)
 
 const t: ChatNodeViewProps['t'] = makeTranslate(zh, commonZh)
-type UserSlots = PropsRenderSlots<'conversation.chat.user.before'>
+type UserSlots = PropsRenderSlots<'conversation.chat.user.before' | 'conversation.chat.user-actions' | 'conversation.chat.steering-actions'>
 const userSlots: UserSlots = {
   renderSlot: () => null,
   renderSlotChain: (_key, _owner, opts) => opts?.fallback ?? null,
