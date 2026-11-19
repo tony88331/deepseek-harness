@@ -1,7 +1,7 @@
 import {
   $addUpdateTag, $createRangeSelection, $getRoot, $getSelection, $getState, $hasUpdateTag, $isRangeSelection,
   $setState, BEFORE_INPUT_COMMAND, COMMAND_PRIORITY_CRITICAL, CONTROLLED_TEXT_INSERTION_COMMAND,
-  createState, CUT_COMMAND, DELETE_CHARACTER_COMMAND, DELETE_WORD_COMMAND, HISTORIC_TAG, RootNode,
+  createState, CUT_COMMAND, DELETE_CHARACTER_COMMAND, DELETE_WORD_COMMAND, HISTORIC_TAG, HISTORY_PUSH_TAG, RootNode,
   type LexicalEditor,
 } from 'lexical'
 import { mergeRegister } from '@lexical/utils'
@@ -40,7 +40,7 @@ export class InsertionOrigins {
   constructor(private readonly editor: LexicalEditor, private readonly previousText: () => string) {}
 
   tokens(): readonly object[] {
-    return this.editor.getEditorState().read(() => $getState($getRoot(), origins).map(range => range.token))
+    return this.editor.getEditorState().read(() => [...new Set($getState($getRoot(), origins).map(range => range.token))])
   }
 
   $replace = $splice
@@ -76,7 +76,7 @@ export class InsertionOrigins {
     return mergeRegister(
       e.registerCommand(BEFORE_INPUT_COMMAND, event => {
         if (!/^(insert|delete)/.test(event.inputType)) return false
-        return this.$capture(event.inputType.endsWith('Backward'), event.getTargetRanges()[0])
+        return this.$capture(event.inputType.endsWith('Backward'), event.getTargetRanges?.()[0])
       }, COMMAND_PRIORITY_CRITICAL),
       e.registerCommand(CONTROLLED_TEXT_INSERTION_COMMAND, event => {
         if (this.edit === undefined) this.$capture()
@@ -85,6 +85,7 @@ export class InsertionOrigins {
         const edit = this.edit
         const text = typeof event === 'string' ? event : event.data
         if (edit && text && edit.span.start < edit.span.end && edit.before.slice(edit.span.start, edit.span.end) === text) {
+          $addUpdateTag(HISTORY_PUSH_TAG)
           $splice(edit.span, text.length)
           this.edit = undefined
         }
