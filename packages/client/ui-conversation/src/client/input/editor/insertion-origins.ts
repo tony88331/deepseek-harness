@@ -76,7 +76,7 @@ export class InsertionOrigins {
     return mergeRegister(
       e.registerCommand(BEFORE_INPUT_COMMAND, event => {
         if (!/^(insert|delete)/.test(event.inputType)) return false
-        return this.$capture(event.inputType.endsWith('Backward'), event.getTargetRanges()[0])
+        return this.$capture(event.inputType.endsWith('Backward'), event.getTargetRanges?.()[0])
       }, COMMAND_PRIORITY_CRITICAL),
       e.registerCommand(CONTROLLED_TEXT_INSERTION_COMMAND, event => {
         if (this.edit === undefined) this.$capture()
