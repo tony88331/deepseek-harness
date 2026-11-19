@@ -49,7 +49,7 @@ export interface DraftCommand {
  * token; runtime node identities are excluded.
  */
 export interface DraftSnapshot {
-  /** Interrupted ordinary native admission belonging to this Session's persisted draft. */
+  /** Interrupted native admission included when restoring its owner's document. */
   readonly pendingSend?: import('./composer-submission.ts').PendingComposerSend
   readonly text: string
   readonly references: readonly DraftReference[]

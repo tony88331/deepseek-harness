@@ -26,7 +26,7 @@ import type { ComposerSendRecovery, InputSubmission, InputSubmitMode } from '../
 import type { PopupDismissFace } from './facade.ts'
 import { SessionInputShell } from './facade.ts'
 import { reportMessageSubmission } from './submission-analytics.ts'
-import { readConversationDraft } from '../stores.ts'
+import { ComposerDraftStorage } from './draft-storage.ts'
 
 /** Structural command face for per-session popup resolution. */
 interface CommandFace {
@@ -234,9 +234,7 @@ export class InputHub implements SessionInputResolver {
         return () => { shell.refreshLexiconSubscription() }
       }, 'conversation.input: reference catalogs')
     })
-    const saved = readConversationDraft(binding.sessionId)
-    shell.setDraft(saved)
-    if (saved.pendingSend !== undefined) shell.restoreSend(saved.pendingSend)
+    shell.initializeStorage(new ComposerDraftStorage(binding.sessionId))
     // A reload discarded the browser-owned attachments; say so instead of dropping them silently.
     if (takeUnloadMark(binding.sessionId)) shell.notify('error', this.t('attachments.unavailable'))
     return shell
@@ -383,7 +381,7 @@ export class InputHub implements SessionInputResolver {
       } catch (error) {
         this.rootCtx.logger.warn('Conversation submission observer failed: %o', error)
       }
-    }, session.getSnapshot().subagent === null ? recovery : undefined)
+    }, recovery)
   }
 
   /**

@@ -1004,6 +1004,44 @@ describe('sendSession submission echo', () => {
     await b.runtime.dispose()
   })
 
+  it.each(['ordinary', 'continuation'])('restores an unmounted %s send and waits for its exact evidence', async route => {
+    const b = await bench()
+    try {
+      const binding = b.runtime.sessions.binding('s1')!
+      const session = binding.session
+      const snapshot = session.getSnapshot()
+      if (route === 'continuation') vi.spyOn(session, 'getSnapshot').mockReturnValue({
+        ...snapshot,
+        subagent: { address: { parentSessionId: 'parent', childSessionId: 'child', mode: 'continuable' } as never },
+      })
+      const begin = vi.spyOn(session, 'beginSubmission')
+      const receipt = Promise.withResolvers<{ ok: true; value: { accepted: true } }>()
+      b.prompt.mockReturnValueOnce(receipt.promise)
+      const unmount = b.shell.bindDraftPersistence(() => {})
+      b.shell.setDraft('original document')
+      b.shell.submit('queue', 'enter')
+      unmount() // The retained session continues serializing after its composer view disappears.
+      await vi.waitFor(() => expect(b.prompt).toHaveBeenCalledOnce())
+      const requestId = b.prompt.mock.calls[0]![3]
+      begin.mock.calls[0]![0].onUncertain?.()
+      b.shell.dispose()
+
+      const reopened = new InputHub(b.runtime.ctx, makeTranslate(zh, {})).shellFor(binding)
+      await vi.waitFor(() => expect(reopened.snapshot.sendRecovery).toMatchObject({ canRetry: route === 'ordinary' }))
+      expect(reopened.snapshot).toMatchObject({ phase: 'sending', draft: 'original document' })
+      expect(begin.mock.calls[1]?.[0].restore?.requestId).toBe(requestId)
+      reopened.submit()
+      if (route === 'continuation') reopened.retrySend()
+      expect(b.prompt).toHaveBeenCalledOnce()
+      begin.mock.calls[1]![0].onAccept?.()
+      await vi.waitFor(() => expect(reopened.snapshot).toMatchObject({ phase: 'plain', draft: '' }))
+      expect(b.prompt).toHaveBeenCalledOnce()
+      receipt.resolve({ ok: true, value: { accepted: true } })
+    } finally {
+      await b.runtime.dispose()
+    }
+  })
+
   it('echoes a subagent continuation and sends it under the echo request id', async () => {
     const b = await bench()
     const session = b.runtime.sessions.binding('s1')!.session
