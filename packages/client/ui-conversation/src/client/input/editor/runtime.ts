@@ -5,7 +5,7 @@ import type { QuoteSummary } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   $addUpdateTag, $createParagraphNode, $createTextNode, $getAdjacentNode, $isTextNode,
   $getRoot, $getSelection, $getNodeByKey, $isRangeSelection,
-  BLUR_COMMAND, CLEAR_HISTORY_COMMAND, CONTROLLED_TEXT_INSERTION_COMMAND, COMMAND_PRIORITY_BEFORE_CRITICAL, COMMAND_PRIORITY_CRITICAL, createEditor,
+  BEFORE_INPUT_COMMAND, BLUR_COMMAND, CLEAR_HISTORY_COMMAND, CONTROLLED_TEXT_INSERTION_COMMAND, COMMAND_PRIORITY_BEFORE_CRITICAL, COMMAND_PRIORITY_CRITICAL, createEditor,
   HISTORY_MERGE_TAG, INPUT_COMMAND, PASTE_TAG,
   RootNode, SELECTION_CHANGE_COMMAND, SKIP_DOM_SELECTION_TAG, KEY_BACKSPACE_COMMAND, KEY_DELETE_COMMAND, HISTORY_PUSH_TAG,
 } from 'lexical'
@@ -125,6 +125,18 @@ export class DraftEditorRuntime {
         this.deps.openReference(source, reference)),
       registerHistory(this.editor, createEmptyHistoryState(), HISTORY_MERGE_DELAY_MS),
       // DOM input can commit a same-value replacement without changing the semantic projection.
+      this.editor.registerCommand(BEFORE_INPUT_COMMAND, event => {
+        // Chromium may finish a same-value replacement entirely in beforeinput.
+        const range = event.getTargetRanges?.()[0]
+        if (!event.isComposing && event.inputType === 'insertText' && range && !range.collapsed) {
+          const selection = this.editor.getRootElement()?.ownerDocument.getSelection()
+          if (selection?.toString() === event.data) {
+            $addUpdateTag(DOCUMENT_EDIT_TAG)
+            $getRoot().markDirty()
+          }
+        }
+        return false
+      }, COMMAND_PRIORITY_BEFORE_CRITICAL),
       this.editor.registerCommand(INPUT_COMMAND, () => {
         $addUpdateTag(DOCUMENT_EDIT_TAG)
         return false
