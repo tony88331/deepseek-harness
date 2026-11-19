@@ -66,6 +66,15 @@ export interface TurnTailOwnerProps {
 /** Owner currency of finalized-assistant actions. */
 export interface AssistantActionOwnerProps {
   messageId: MessageId
+  /** The same text offered by the built-in copy action. */
+  text: string
+}
+
+/** Owner currency of durable user-message actions. */
+export interface UserActionOwnerProps {
+  messageId: MessageId
+  /** The same text offered by the built-in copy action. */
+  text: string
 }
 
 /** Stable quota failure codes retained in the Session log; both raise the frame-wide notice. */
@@ -510,6 +519,10 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * that entry. With no entries, the standard action row remains unchanged.
      */
     'conversation.chat.assistant-actions': { kind: 'list'; scope: 'session'; owner: AssistantActionOwnerProps }
+    /** Ordered actions for one durable user message, beside the built-in actions. */
+    'conversation.chat.user-actions': { kind: 'list'; scope: 'session'; owner: UserActionOwnerProps }
+    /** Ordered actions for one admitted steering message. */
+    'conversation.chat.steering-actions': { kind: 'list'; scope: 'session'; owner: UserActionOwnerProps }
     /**
      * Frame-wide quota notice chain. The Chat-owned host in `shell.overlay`
      * offers the one live notice; the first entry whose selector claims its

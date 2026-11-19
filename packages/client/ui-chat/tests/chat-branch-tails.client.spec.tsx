@@ -89,7 +89,7 @@ function MessageItem({ node, t: translate, referenceLabels, skillNames }: Messag
     case 'user':
       return <UserMessageNodeView {...props as ChatNodeViewProps<'user'>} {...userSlots} />
     case 'steering':
-      return <UserMessageNodeView {...props as ChatNodeViewProps<'steering'>} renderSlotChain={() => null} />
+      return <UserMessageNodeView {...props as ChatNodeViewProps<'steering'>} renderSlotChain={() => null} renderSlot={() => null} />
     case 'context':
       return <ContextMessageNodeView {...props as ChatNodeViewProps<'context'>} />
     case 'compaction':
