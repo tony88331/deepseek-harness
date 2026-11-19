@@ -304,6 +304,8 @@ export type ConsumeTokenGuard = ConsumeTokenRequest['guard']
 
 /** Published input state (the currency; per-session). */
 export interface InputState {
+  /** Unresolved ordinary send. Empty names represent a text-only request. */
+  readonly sendRecovery?: { readonly canRetry: boolean; readonly attachmentNames: readonly string[] }
   /** Clipboard-text projection of the editor document (chips expanded to their clipboard form). */
   readonly draft: string
   /** Ordered runtime-only attachment ids; browser objects stay in ConversationController. */

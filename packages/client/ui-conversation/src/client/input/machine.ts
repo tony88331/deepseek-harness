@@ -128,6 +128,13 @@ export class SubmitMachine {
     return attempt
   }
 
+  /** Reoccupy the ordinary sending slot after reload, without slash arbitration or dispatch. */
+  restoreSend(mode: InputSubmitMode, draft: string, draftRevision: number): SubmitAttempt {
+    const attempt = this.beginAttempt(mode, draft, [], [], [], { mode, timestamp: Date.now(), draftRevision })
+    this.phase = 'sending'
+    return attempt
+  }
+
   /** Send the frozen message; the editor stays read-only until the Host accepts it. */
   private send(attempt: SubmitAttempt): readonly InputEffect[] {
     this.claim = undefined

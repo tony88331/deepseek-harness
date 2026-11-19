@@ -249,7 +249,8 @@ export class Session implements SessionFace {
    * @returns the minted identity for {@link prompt} plus the pre-prompt abandon path.
    */
   beginSubmission(input: BeginSubmissionInput): SubmissionHandle {
-    const requestId = randomUUID() as SessionRequestId
+    const requestId = input.restore?.requestId ?? randomUUID() as SessionRequestId
+    if (this.submissionSettlements.has(requestId)) throw new Error('submission already registered')
     const placement = this.running ? input.mode === 'steer' ? 'steering' : 'queued' : 'transcript'
     this.pendingSubmissions = [...this.pendingSubmissions, {
       requestId,
@@ -261,7 +262,20 @@ export class Session implements SessionFace {
     this.submissionSettlements.set(requestId, {
       placement, accepted: false, onAccept: input.onAccept, onUncertain: input.onUncertain, onRetire: input.onRetire, retiring: false,
     })
-    return { requestId, abandon: () => { this.retireFailedSubmission(requestId) } }
+    const afterSeq = input.restore?.afterSeq ?? this.submissionHistory.lastSeq
+    if (input.restore !== undefined) {
+      const settlement = this.submissionSettlements.get(requestId)!
+      settlement.searchAfterSeq = afterSeq
+      queueMicrotask(() => {
+        if (this.submissionSettlements.get(requestId) !== settlement) return
+        this.observeSubmissionInbox()
+        for (const { event } of this.eventSource.getSnapshot().entries) {
+          if (event.seq > afterSeq && this.acceptHistoricalSubmission(requestId, event)) return
+        }
+        void this.reconcileUncertainSubmission(requestId)
+      })
+    }
+    return { requestId, afterSeq, abandon: () => { this.retireFailedSubmission(requestId) } }
   }
 
   /**
@@ -324,14 +338,14 @@ export class Session implements SessionFace {
     if (!result.ok) {
       if (settlement?.accepted === true) return { ok: true, value: { accepted: true } }
       // Both codes can originate in the carrier after the Host already received the prompt.
-      const onUncertain = result.error.code === 'gateway/internal' || result.error.code === 'gateway/cancelled'
+      const onUncertain = settlement?.searchAfterSeq !== undefined || result.error.code === 'gateway/internal' || result.error.code === 'gateway/cancelled'
         ? settlement?.onUncertain
         : undefined
       this.promptError = { op: 'send', error: result.error }
       this.promptErrorRequestId = requestId
       this.notifier.markDirty()
       if (onUncertain !== undefined && settlement !== undefined && requestId !== undefined) {
-        settlement.searchAfterSeq = dispatchedAfterSeq
+        settlement.searchAfterSeq ??= dispatchedAfterSeq
         onUncertain()
         void this.reconcileUncertainSubmission(requestId)
       } else {
@@ -836,6 +850,22 @@ export class Session implements SessionFace {
     this.notifier.markDirty()
   }
 
+  /** Exact journal evidence can retire an interrupted submission without publishing a duplicate echo. */
+  private acceptHistoricalSubmission(requestId: SessionRequestId, event: SessionEventLikeEntry['event']): boolean {
+    const settlement = this.submissionSettlements.get(requestId)
+    if (settlement === undefined || settlement.retiring) return false
+    const messages = event.type === 'user/message' ? [event.data]
+      : event.type === 'agent/inbox/spliced' ? event.data.inserted : []
+    const match = messages.find(({ source }) => source.kind === 'user' && 'rpcId' in source
+      && source.rpcId === requestId)
+    if (match === undefined) return false
+    const attachments = attachmentRefsIn(match.content)
+    settlement.retiring = true
+    this.acceptPrompt(requestId, false)
+    this.finishSubmission(requestId, { reason: 'observed', attachments })
+    return true
+  }
+
   /** Look behind a restored tail for exact acceptance missed while follow was unavailable. */
   private async reconcileUncertainSubmission(requestId: SessionRequestId): Promise<void> {
     const events = this.events
@@ -865,16 +895,7 @@ export class Session implements SessionFace {
 
         for (const { event } of historyEntries(page.records)) {
           if (event.seq <= afterSeq) continue
-          const messages = event.type === 'user/message' ? [event.data]
-            : event.type === 'agent/inbox/spliced' ? event.data.inserted : []
-          const match = messages.find(({ source }) => source.kind === 'user' && 'rpcId' in source
-            && source.rpcId === requestId)
-          if (match === undefined) continue
-          const attachments = attachmentRefsIn(match.content)
-          settlement.retiring = true
-          this.acceptPrompt(requestId, false)
-          this.finishSubmission(requestId, { reason: 'observed', attachments })
-          return
+          if (this.acceptHistoricalSubmission(requestId, event)) return
         }
         if (!page.hasMore) break
         beforeSeq = first

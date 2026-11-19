@@ -31,7 +31,22 @@ const quoteSchema = z.object({
   summary: quoteSummarySchema.optional(),
 })
 
+const storedSend = z.object({
+  requestId: z.string().min(1).transform(id => id as import('@deepseek-ai/dsh-api-session-controller/types').SessionRequestId),
+  afterSeq: z.number().int().min(-1),
+  mode: z.enum(['queue', 'steer']),
+  content: z.array(z.discriminatedUnion('type', [
+    z.object({ type: z.literal('text'), text: z.string() }),
+    z.object({ type: z.literal('file'), receiptId: z.string().min(1).transform(id => id as import('@deepseek-ai/dsh-brand').Branded<'file-upload-receipt-id'>) }),
+    z.object({ type: z.literal('image'), mediaType: z.enum(['image/png', 'image/webp', 'image/gif', 'image/jpeg']), data: z.string(), name: z.string().optional() })
+      .transform(({ type, mediaType, data, name }) => ({ type, mediaType, data, ...name === undefined ? {} : { name } })),
+  ])).min(1),
+  ownsDraft: z.boolean(),
+  attachmentNames: z.array(z.string()),
+})
+
 const snapshotSchema = z.object({
+  pendingSend: storedSend.optional(),
   text: z.string(),
   references: z.array(referenceSchema),
   command: commandSchema.optional(),
@@ -84,6 +99,7 @@ export function parseStoredDraft(value: unknown): DraftSnapshot | undefined {
   if (!parsed.success) return undefined
   return {
     text: parsed.data.text,
+    ...parsed.data.pendingSend === undefined ? {} : { pendingSend: parsed.data.pendingSend },
     ...parsed.data.quotes === undefined ? {} : { quotes: parsed.data.quotes },
     references: parsed.data.references.map(({ appearance, invalid, ...reference }) => ({
       ...reference,

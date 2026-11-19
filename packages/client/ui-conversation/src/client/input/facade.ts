@@ -23,7 +23,7 @@ import type {
 import type {
   ArbitrateKey, ArbitrateOutcome, ComposerKeyboard, DraftInput, DraftSnapshot, ReferenceInsert, TokenSpan,
 } from '../contract/draft-editor.ts'
-import type { InputSubmitMode, MessageSubmission, MessageSubmissionState } from '../contract/composer-submission.ts'
+import type { ComposerSendRecovery, PendingComposerSend, InputSubmitMode, MessageSubmission, MessageSubmissionState } from '../contract/composer-submission.ts'
 import { serializeDraftPrompt } from './prompt.ts'
 import { SubmitMachine } from './machine.ts'
 import { resolveDraftInput, snapshotDraft } from '../draft.ts'
@@ -173,6 +173,11 @@ export class SessionInputShell implements SessionInput {
   private lastPublishedDraft: DraftSnapshot | undefined
   private draftSnapshotCache: { revision: number; value: DraftSnapshot } | undefined
   private attachmentIds: readonly DraftAttachmentId[] = []
+  /** Recovery callbacks belonging to the current native sink invocation. */
+  recovery: ComposerSendRecovery | undefined
+  private pendingSend: { record: PendingComposerSend; revision: number } | undefined
+  private retryPendingSend: (() => void) | undefined
+  private unresolved = false
   private disposed = false
   /** Conversation store writer for the current semantic document. */
   private persistDraft: ((draft: DraftSnapshot) => void) | undefined
@@ -296,8 +301,12 @@ export class SessionInputShell implements SessionInput {
     const value = snapshotDraft(
       this.projection.clipboardText, this.projection.occurrences, this.projection.command?.token, this.projection.quotes,
     )
-    this.draftSnapshotCache = { revision: this.rev, value }
-    return value
+    const pending = this.pendingSend
+    const document = pending === undefined ? value : {
+      ...value, pendingSend: { ...pending.record, ownsDraft: pending.record.ownsDraft && pending.revision === this.rev },
+    }
+    this.draftSnapshotCache = { revision: this.rev, value: document }
+    return document
   }
 
   /** Persist the latest document without changing the editor or binding a writer. */
@@ -692,7 +701,7 @@ export class SessionInputShell implements SessionInput {
         return
       }
       case 'default-sink': {
-        this.sinkSerialized(fx.attempt, fx.draft, fx.mode)
+        this.sinkSerialized(fx.attempt, fx.draft)
         return
       }
       case 'commit-draft': {
@@ -728,7 +737,6 @@ export class SessionInputShell implements SessionInput {
   private sinkSerialized(
     attempt: SubmitAttempt,
     draft: string,
-    mode: InputSubmitMode,
   ): void {
     this.notifySubmission(attempt.submission)
     const { occurrences, quotes, attachmentIds } = attempt
@@ -744,12 +752,49 @@ export class SessionInputShell implements SessionInput {
         return
       }
       const draftRevision = attempt.submission?.draftRevision ?? this.rev
-      this.settleSink(attempt, this.deps.defaultSink(
-        text, attachmentIds, mode, attempt.signal, () => { this.acceptSink(attempt) }, draftRevision,
-      ))
+      this.sendAttempt(attempt, text, draftRevision)
     }
     if (!(prompt instanceof Promise)) { send(prompt); return }
     void prompt.then(send, (error: unknown) => { this.failSink(attempt, error) })
+  }
+
+  /** Reattach the saved wire intent before returning the restored editable surface to callers. */
+  restoreSend(record: PendingComposerSend): void {
+    const revision = record.ownsDraft ? this.rev : -1
+    const attempt = this.core.restoreSend(record.mode, this.snapshot.draft, revision)
+    this.sendAttempt(attempt, '', revision, record)
+  }
+
+  /** Invoke the idempotent retry, once per explicit gesture. */
+  retrySend(): void { this.retryPendingSend?.() }
+
+  private sendAttempt(attempt: SubmitAttempt, text: string, draftRevision: number, restored?: PendingComposerSend): void {
+    this.recovery = {
+      ...restored === undefined ? {} : { restored },
+      save: record => {
+        if (this.dead(attempt)) return
+        this.pendingSend = { record, revision: draftRevision }
+        this.draftSnapshotCache = undefined
+        this.publish()
+      },
+      offerRetry: retry => {
+        if (this.dead(attempt)) return
+        this.unresolved = true
+        this.retryPendingSend = retry
+        this.publish()
+      },
+    }
+    this.settleSink(attempt, this.deps.defaultSink(
+      text, attempt.attachmentIds, attempt.mode, attempt.signal, () => { this.acceptSink(attempt) }, draftRevision,
+    ))
+  }
+
+  private clearSendRecovery(): void {
+    this.recovery = undefined
+    this.pendingSend = undefined
+    this.retryPendingSend = undefined
+    this.unresolved = false
+    this.draftSnapshotCache = undefined
   }
 
   private notifySubmission(submission: MessageSubmission | undefined): void {
@@ -781,6 +826,7 @@ export class SessionInputShell implements SessionInput {
 
   private applySinkOutcome(attempt: SubmitAttempt, outcome: SubmitOutcome): void {
     if (this.core.sendingAttempt !== attempt) return
+    this.clearSendRecovery()
     const accepted = outcome.kind === 'success'
     if (accepted && attempt.attachmentIds.length > 0) {
       const sent = new Set(attempt.attachmentIds)
@@ -793,6 +839,7 @@ export class SessionInputShell implements SessionInput {
   /** Settle a send that ended without a Host outcome; the draft stays for correction. */
   private failSink(attempt: SubmitAttempt, error: unknown): void {
     if (this.dead(attempt)) return
+    this.clearSendRecovery()
     this.dispatchRun(({ type: 'sink-settled', attempt, ok: false, message: errorText(error) }))
   }
 
@@ -871,6 +918,9 @@ export class SessionInputShell implements SessionInput {
       attachmentIds: this.attachmentIds,
       draftRev: this.rev,
       phase: core.phase,
+      ...this.unresolved && this.pendingSend !== undefined ? { sendRecovery: {
+        canRetry: this.retryPendingSend !== undefined, attachmentNames: this.pendingSend.record.attachmentNames,
+      } } : {},
       ...(core.claim !== undefined ? { claim: core.claim } : {}),
       occurrences: this.projection.occurrences,
       queue: this.deps.inbox?.getSnapshot()?.['next-turn'] ?? EMPTY_QUEUE,
