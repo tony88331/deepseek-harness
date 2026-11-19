@@ -13,7 +13,8 @@ import { registerPlainText } from '@lexical/plain-text'
 import { createEmptyHistoryState, registerHistory } from '@lexical/history'
 import { mergeRegister } from '@lexical/utils'
 import type { DraftQuote, DraftReference, ReferenceInsert } from '../../contract/draft-editor.ts'
-import type { CommandClaim } from '../../contract/input.ts'
+import { InsertionOrigins } from './insertion-origins.ts'
+import type { CommandClaim, InsertionOrigin } from '../../contract/input.ts'
 import { QuoteNode, $createQuoteNode, $isQuoteNode, REMOVE_QUOTE_COMMAND } from './QuoteNode.tsx'
 import type { QuoteNodeLabels } from './QuoteNode.tsx'
 import { registerReferenceActivation } from './reference-activation.ts'
@@ -69,6 +70,7 @@ export const DRAFT_SUBMITTED_TAG = 'dsh-draft-submitted'
 /** One model-owned editor; registration and disposal remain with its model. */
 export class DraftEditorRuntime {
   /** The editor bound by the Composer's contenteditable host. */
+  readonly origins: InsertionOrigins
   readonly editor: LexicalEditor
   private projected: EditorProjection = {
     detectText: '', clipboardText: '', occurrences: [], quotes: [], selection: null, caret: null, command: undefined,
@@ -87,6 +89,7 @@ export class DraftEditorRuntime {
       nodes: [ReferenceChipNode, CommandChipNode, TextRefNode, QuoteNode],
       onError: (error) => { throw error },
     })
+    this.origins = new InsertionOrigins(this.editor, () => this.projection.detectText)
   }
 
   /**
@@ -103,6 +106,7 @@ export class DraftEditorRuntime {
       return false
     }
     const unregister = mergeRegister(
+      this.origins.register(),
       registerPlainText(this.editor),
       this.editor.registerNodeTransform(QuoteNode, (node) => { node.setLabels(this.deps.quoteLabels()) }),
       this.editor.registerCommand(REMOVE_QUOTE_COMMAND, key => this.removeQuote(key), COMMAND_PRIORITY_CRITICAL),
@@ -199,8 +203,12 @@ export class DraftEditorRuntime {
    */
   setDraft(text: string): void {
     const clean = text.replace(REFERENCE_PLACEHOLDER_RE, '')
-    if (clean === this.projection.clipboardText && this.projection.occurrences.length === 0 && this.projection.quotes.length === 0) return
+    if (clean === this.projection.clipboardText && this.projection.occurrences.length === 0 && this.projection.quotes.length === 0) {
+      if (this.origins.tokens().length) this.applyEdit(() => this.origins.$clear())
+      return
+    }
     this.editor.update(() => {
+      this.origins.$clear()
       $getRoot().clear()
       $appendParagraphs(clean)
     }, { discrete: true, tag: HISTORY_MERGE_TAG })
@@ -236,7 +244,9 @@ export class DraftEditorRuntime {
     this.applyEdit(() => {
       const selection = $getSelection()
       if ($isRangeSelection(selection)) {
+        const span = $projectComposer(key => this.occurrenceIdOf(key)).selection
         selection.insertText(clean)
+        if (span) this.origins.$replace(span, clean.length)
         return
       }
       // No selection yet (never-focused surface): land at the document end,
@@ -279,10 +289,13 @@ export class DraftEditorRuntime {
    * @param text - text sanitized with the same rules as paste.
    * @returns whether the range mapped and the edit applied.
    */
-  insertAsyncText(span: DetectSpan, text: string): boolean {
+  insertAsyncText(span: DetectSpan, text: string, origin?: InsertionOrigin): boolean {
     let applied = false
     const clean = text.replace(REFERENCE_PLACEHOLDER_RE, '')
-    this.applyEdit(() => { applied = $replaceDetectSpanWithText(span, clean) }, PASTE_TAG)
+    this.applyEdit(() => {
+      applied = $replaceDetectSpanWithText(span, clean)
+      if (applied) this.origins.$replace(span, clean.length, text === clean ? origin : undefined)
+    }, PASTE_TAG)
     return applied
   }
 
@@ -406,6 +419,7 @@ export class DraftEditorRuntime {
    */
   clearCommittedDraft(prefixLength: (clipboardText: string) => number | null): void {
     this.editor.update(() => {
+      this.origins.$clear()
       const layout = $composerLayout()
       const length = prefixLength(layout.clipboardText)
       if (length !== null) {
@@ -429,6 +443,7 @@ export class DraftEditorRuntime {
    */
   restoreDraft(draft: string, occurrences: readonly DraftReference[], quotes: readonly DraftQuote[] = [], labels: QuoteNodeLabels = { remove: '' }): void {
     this.editor.update(() => {
+      this.origins.$clear()
       const root = $getRoot()
       root.clear()
       let paragraph = $createParagraphNode()

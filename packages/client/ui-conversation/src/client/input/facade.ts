@@ -149,10 +149,11 @@ export class SessionInputShell implements SessionInput {
   readonly actions: InputActions = {
     insertQuote: (text, summary) => this.insertQuote(text, summary),
     captureInsertion: () => ({ ...this.caretSpan(), draftRev: this.rev }),
-    insertText: (text, span) => {
+    getInsertionOrigins: () => this.draftEditor.origins.tokens(),
+    insertText: (text, span, origin) => {
       if (frozen(this.snapshot.phase) || this.disposed) return false
       if (span.draftRev !== this.rev) return false
-      return this.draftEditor.insertAsyncText(span, text)
+      return this.draftEditor.insertAsyncText(span, text, origin)
     },
     setDraft: (text) => { this.setDraft(text) },
     persistDraft: () => { this.persistCurrentDraft() },
