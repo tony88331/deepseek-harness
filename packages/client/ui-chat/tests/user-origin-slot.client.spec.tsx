@@ -22,7 +22,7 @@ import { unusedImageLoader } from './reasoning-component-fixture.tsx'
 afterEach(cleanup)
 
 const t: ChatNodeViewProps['t'] = makeTranslate(zh, commonZh)
-type UserSlots = PropsRenderSlots<'conversation.chat.user.before'>
+type UserSlots = PropsRenderSlots<'conversation.chat.user.before' | 'conversation.chat.user-actions' | 'conversation.chat.steering-actions'>
 const userSlots: UserSlots = {
   renderSlot: () => null,
   renderSlotChain: (_key, _owner, opts) => opts?.fallback ?? null,
@@ -124,7 +124,7 @@ describe('official user renderer origin seat', () => {
     const renderSlotChain = vi.fn(() => <span data-test-origin="" />)
     const view = render(<>
       <UserMessageNodeView {...viewProps(userData)} {...userSlots} renderSlotChain={renderSlotChain} />
-      <UserMessageNodeView {...viewProps(steeringData)} renderSlotChain={() => null} />
+      <UserMessageNodeView {...viewProps(steeringData)} {...userSlots} />
     </>)
     const steeringRow = view.container.lastElementChild!
     expect(steeringRow.textContent).toContain('steer')
@@ -135,5 +135,23 @@ describe('official user renderer origin seat', () => {
     expect(view.container.querySelectorAll('[data-test-origin]')).toHaveLength(1)
     expect(steeringRow.querySelector('[data-test-origin]')).toBeNull()
     expect(view.container.querySelector('[data-chat-steering-batch]')).toBeNull()
+  })
+
+  it('passes durable user and steering message text to actions beside Copy', () => {
+    const messageId = 'fixture-user' as NonNullable<UserMessageNode['messageId']>
+    const renderSlot = vi.fn(() => <button type="button">Fixture action</button>)
+    const view = render(<>
+      <UserMessageNodeView {...viewProps({ ...userData, messageId })} {...userSlots} renderSlot={renderSlot} />
+      <UserMessageNodeView {...viewProps(steeringData)} {...userSlots} renderSlot={renderSlot} />
+      <UserMessageNodeView {...viewProps(userData)} {...userSlots} renderSlot={renderSlot} />
+    </>)
+
+    expect(renderSlot.mock.calls).toEqual([
+      ['conversation.chat.user-actions', { messageId, text: 'hello' }],
+      ['conversation.chat.steering-actions', { messageId: steeringData.messageId, text: 'steer' }],
+    ])
+    expect(view.getAllByRole('button', { name: 'Fixture action' }).map(button =>
+      button.previousElementSibling?.getAttribute('aria-label'),
+    )).toEqual(['复制', '复制'])
   })
 })
