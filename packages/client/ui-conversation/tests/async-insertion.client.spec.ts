@@ -1,6 +1,6 @@
 /** Late input insertions preserve references, subsequent edits, and undo ownership. */
 import { Context } from '@deepseek-ai/cordis'
-import { UNDO_COMMAND } from 'lexical'
+import { REDO_COMMAND, UNDO_COMMAND } from 'lexical'
 import { expect, it, vi } from 'vitest'
 import { SessionInputShell } from '../src/client/input/facade.ts'
 
@@ -35,4 +35,23 @@ it('refuses results captured before a user edit or after editor disposal', () =>
   const latest = input.actions.captureInsertion()
   input.dispose()
   expect(input.actions.insertText('late voice', latest)).toBe(false)
+})
+
+it('restores the source of an identical replacement through native undo and redo', async () => {
+  const input = shell()
+  try {
+    const token = {}
+    const { actions } = input
+    actions.insertText('hello', actions.captureInsertion(), { token, start: 0, end: 5 })
+    expect(actions.getInsertionOrigins?.()).toEqual([token])
+    actions.insertText('hello', { ...actions.captureInsertion(), start: 0, end: 5 })
+    expect(input.snapshot.draft).toBe('hello')
+    expect(actions.getInsertionOrigins?.()).toEqual([])
+    input.editor.dispatchCommand(UNDO_COMMAND, undefined)
+    await vi.waitFor(() => { expect(actions.getInsertionOrigins?.()).toEqual([token]) })
+    expect(input.snapshot.draft).toBe('hello')
+    input.editor.dispatchCommand(REDO_COMMAND, undefined)
+    await vi.waitFor(() => { expect(actions.getInsertionOrigins?.()).toEqual([]) })
+    expect(input.snapshot.draft).toBe('hello')
+  } finally { input.dispose() }
 })

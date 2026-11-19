@@ -269,7 +269,10 @@ export interface InsertionOrigin {
  * paste/…) stay InputBar-private and never ride this face.
  */
 export interface InputActions {
-  /** Opaque sources that still own text in the current editor document. */
+  /**
+   * Each surviving insertion source, in insertion order. A token stays in its
+   * editor's native undo history and never enters the saved or sent text.
+   */
   getInsertionOrigins?(): readonly object[]
   /**
    * Insert one nonblank quote.
@@ -284,6 +287,8 @@ export interface InputActions {
    * Insert asynchronous text without replacing subsequent edits or reference chips.
    * @param text - plain text to insert in one undo step.
    * @param span - captured selection and draft revision.
+   * @param origin - optional opaque owner and range within the new text;
+   *   generated separators outside the range remain unowned.
    * @returns false when the draft changed or submission locked the editor.
    */
   insertText(text: string, span: TokenSpan, origin?: InsertionOrigin): boolean

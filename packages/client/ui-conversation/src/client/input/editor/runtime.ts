@@ -228,7 +228,11 @@ export class DraftEditorRuntime {
       this.setDraft(clean)
       return
     }
-    this.editor.update(() => { $appendParagraphs(clean) }, { discrete: true, tag: HISTORY_MERGE_TAG })
+    this.editor.update(() => {
+      const at = this.projection.detectText.length
+      $appendParagraphs(clean)
+      this.origins.$replace({ start: at, end: at }, 1 + clean.length)
+    }, { discrete: true, tag: HISTORY_MERGE_TAG })
   }
 
   /**
@@ -279,6 +283,7 @@ export class DraftEditorRuntime {
     let applied = false
     this.applyEdit(() => {
       applied = $replaceDetectSpanWithText(span, text)
+      if (applied) this.origins.$replace(span, text.length)
     })
     return applied
   }
@@ -287,6 +292,7 @@ export class DraftEditorRuntime {
    * Insert an asynchronous text result as one independent undo operation.
    * @param span - owner-validated insertion range.
    * @param text - text sanitized with the same rules as paste.
+   * @param origin - optional token for a half-open range of the inserted text.
    * @returns whether the range mapped and the edit applied.
    */
   insertAsyncText(span: DetectSpan, text: string, origin?: InsertionOrigin): boolean {
@@ -313,6 +319,7 @@ export class DraftEditorRuntime {
         ? [$createReferenceChipNode(ref)]
         : [$createReferenceChipNode(ref), $createTextNode(' ')]
       applied = $replaceDetectSpanWithNodes(span, nodes)
+      if (applied) this.origins.$replace(span, nodes.length)
     })
     return applied
   }
@@ -335,6 +342,7 @@ export class DraftEditorRuntime {
         ? [$createCommandChipNode(claim)]
         : [$createCommandChipNode(claim), $createTextNode(separator)]
       applied = $replaceDetectSpanWithNodes(span, nodes)
+      if (applied) this.origins.$replace(span, 1 + (nodes.length > 1 ? separator.length : 0))
     }, mergeHistory ? HISTORY_MERGE_TAG : undefined)
     return applied
   }
@@ -353,7 +361,9 @@ export class DraftEditorRuntime {
       const before = projection.detectText.slice(0, at)
       const nodes = references.flatMap(ref => [$createReferenceChipNode(ref), $createTextNode(' ')])
       if (before !== '' && !/\s$/u.test(before)) nodes.unshift($createTextNode(' '))
-      applied = $replaceDetectSpanWithNodes({ start: at, end: at }, nodes)
+      const span = { start: at, end: at }
+      applied = $replaceDetectSpanWithNodes(span, nodes)
+      if (applied) this.origins.$replace(span, nodes.length)
     }, PASTE_TAG)
     return applied
   }
@@ -370,7 +380,9 @@ export class DraftEditorRuntime {
     this.applyEdit(() => {
       const projection = $projectComposer(key => this.occurrenceIdOf(key))
       const at = projection.selection?.end ?? projection.detectText.length
-      applied = $replaceDetectSpanWithNodes({ start: at, end: at }, [$createQuoteNode(text, labels, summary), $createTextNode(' ')])
+      const span = { start: at, end: at }
+      applied = $replaceDetectSpanWithNodes(span, [$createQuoteNode(text, labels, summary), $createTextNode(' ')])
+      if (applied) this.origins.$replace(span, 2)
     }, PASTE_TAG)
     return applied
   }
@@ -419,15 +431,14 @@ export class DraftEditorRuntime {
    */
   clearCommittedDraft(prefixLength: (clipboardText: string) => number | null): void {
     this.editor.update(() => {
-      this.origins.$clear()
       const layout = $composerLayout()
       const length = prefixLength(layout.clipboardText)
       if (length !== null) {
-        $replaceDetectSpanWithText(
-          { start: 0, end: detectOffsetOfClipboardOffset(layout, length) }, '',
-        )
+        const span = { start: 0, end: detectOffsetOfClipboardOffset(layout, length) }
+        if ($replaceDetectSpanWithText(span, '')) this.origins.$replace(span, 0)
         return
       }
+      this.origins.$clear()
       const root = $getRoot()
       root.clear()
       root.selectEnd()
