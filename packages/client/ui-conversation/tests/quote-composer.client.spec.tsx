@@ -75,6 +75,23 @@ describe('QuoteNode composer lifecycle', () => {
     expect(view.queryByRole('link')).toBeNull()
   })
 
+  it('keeps the origin of surrounding text when a quote and its separator are removed', async () => {
+    const { shell } = bench()
+    const left = {}, right = {}
+    const { actions } = shell
+    actions.insertText('before', actions.captureInsertion(), { token: left, start: 0, end: 6 })
+    shell.insertQuote('cited text')
+    actions.insertText('after', actions.captureInsertion(), { token: right, start: 0, end: 5 })
+    const [key] = quoteKeys(shell)
+    expect(actions.getInsertionOrigins?.()).toEqual([left, right])
+    shell.editor.dispatchCommand(REMOVE_QUOTE_COMMAND, key!)
+    await vi.waitFor(() => { expect(quoteKeys(shell)).toHaveLength(0) })
+    expect(shell.snapshot.draft).toBe('beforeafter')
+    expect(actions.getInsertionOrigins?.()).toEqual([left, right])
+    actions.insertText('typed', { start: 0, end: 6, draftRev: shell.snapshot.draftRev })
+    expect(actions.getInsertionOrigins?.()).toEqual([right])
+  })
+
   it('persists through DraftSnapshot restore as an atomic quote', () => {
     const first = bench().shell
     const mirrored: DraftSnapshot[] = []

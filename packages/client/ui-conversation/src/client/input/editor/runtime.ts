@@ -394,8 +394,14 @@ export class DraftEditorRuntime {
     const parent = node.getParent()
     const offset = node.getIndexWithinParent()
     const separator = node.getNextSibling()
+    const removeSpace = $isTextNode(separator) && separator.getTextContent().startsWith(' ')
+    const segment = $composerLayout().byKey.get(key)
+    if (segment) {
+      const start = segment.detectStart
+      this.origins.$replace({ start, end: start + segment.detectLength + (removeSpace ? 1 : 0) }, 0)
+    }
     $addUpdateTag(HISTORY_PUSH_TAG)
-    if ($isTextNode(separator) && separator.getTextContent().startsWith(' ')) {
+    if (removeSpace) {
       const remaining = separator.getTextContent().slice(1)
       if (remaining === '') separator.remove()
       else separator.setTextContent(remaining)
