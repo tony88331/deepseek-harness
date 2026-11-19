@@ -397,7 +397,7 @@ export type InputEvent =
     readonly message?: string
   }
   /** Settlement of the message being sent: the Host accepted it, or refused it or failed. */
-  | { readonly type: 'sink-settled'; readonly attempt: SubmitAttempt; readonly ok: boolean; readonly outcome?: SubmitOutcome; readonly message?: string }
+  | { readonly type: 'sink-settled'; readonly attempt: SubmitAttempt; readonly ok: boolean; readonly keepDraft?: boolean; readonly outcome?: SubmitOutcome; readonly message?: string }
   | { readonly type: 'release' }
 
 /**

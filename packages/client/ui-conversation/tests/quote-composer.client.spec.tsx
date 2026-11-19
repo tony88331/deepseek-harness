@@ -118,7 +118,7 @@ describe('QuoteNode composer lifecycle', () => {
       .read(() => $nodesOfType(QuoteNode).map(node => node.getQuoteSummary()))).toEqual([undefined])
 
     shell.submit('queue')
-    expect(sink).toHaveBeenCalledWith('> selected source text', [], 'queue', expect.any(AbortSignal), expect.any(Function))
+    expect(sink).toHaveBeenCalledWith('> selected source text', [], 'queue', expect.any(AbortSignal), expect.any(Function), expect.any(Number))
     await vi.waitFor(() => { expect(shell.snapshot.draft).toBe('') })
   })
 
@@ -207,7 +207,7 @@ describe('QuoteNode composer lifecycle', () => {
     shell.paste('answer')
     shell.submit('queue')
     expect(sink).toHaveBeenCalledWith(
-      '> selected source text\n\nanswer', [], 'queue', expect.any(AbortSignal), expect.any(Function),
+      '> selected source text\n\nanswer', [], 'queue', expect.any(AbortSignal), expect.any(Function), expect.any(Number),
     )
     await vi.waitFor(() => { expect(shell.snapshot.draft).toBe('') })
     shell.editor.getEditorState().read(() => { expect($getRoot().getTextContent()).toBe('') })
@@ -218,7 +218,7 @@ describe('QuoteNode composer lifecycle', () => {
     shell.insertQuote('first')
     shell.insertQuote('second')
     shell.submit('queue')
-    expect(sink).toHaveBeenCalledWith('> first\n\n> second', [], 'queue', expect.any(AbortSignal), expect.any(Function))
+    expect(sink).toHaveBeenCalledWith('> first\n\n> second', [], 'queue', expect.any(AbortSignal), expect.any(Function), expect.any(Number))
   })
 
   it('keeps the complete rich document in the editor when a send fails', async () => {

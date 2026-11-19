@@ -160,7 +160,7 @@ describe('matrix row: plain', () => {
     act(() => { shell.setDraft('普通消息') })
     expect(shell.snapshot.claim).toBeUndefined()
     fireEvent.keyDown(textarea, { key: 'Enter' })
-    expect(sink).toHaveBeenCalledWith('普通消息', [], 'queue', expect.any(AbortSignal), expect.any(Function))
+    expect(sink).toHaveBeenCalledWith('普通消息', [], 'queue', expect.any(AbortSignal), expect.any(Function), expect.any(Number))
     // The composer holds the message, read-only, until the Host accepts it.
     expect(shell.snapshot).toMatchObject({ phase: 'sending', draft: '普通消息' })
     await vi.waitFor(() => { expect(shell.snapshot.phase).toBe('plain') })
@@ -367,7 +367,7 @@ describe('matrix row: locked (session disabled)', () => {
     expect(textarea.getAttribute('aria-disabled')).not.toBe('true')
     act(() => { shell.setDraft('排队') })
     fireEvent.keyDown(textarea, { key: 'Enter' })
-    expect(sink).toHaveBeenCalledWith('排队', [], 'queue', expect.any(AbortSignal), expect.any(Function))
+    expect(sink).toHaveBeenCalledWith('排队', [], 'queue', expect.any(AbortSignal), expect.any(Function), expect.any(Number))
   })
 })
 
